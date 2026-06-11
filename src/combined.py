@@ -8,11 +8,6 @@ from trame.widgets import vtk as vtk3
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 import vtk
 
-def toggle_visibility(file_name):
-    """Controller method to toggle visibility of a specific file's actor."""
-    app = ObjViewerApp.get_instance()
-    app.toggle_visibility(file_name)
-    
 
 class ObjViewerApp(TrameApp):
     def __init__(self, server=None):
@@ -77,25 +72,13 @@ class ObjViewerApp(TrameApp):
         
         self.renderer.ResetCamera()
         self.ctrl.view_update()
-
-    def toggle_visibility(self, file_name):
-        """Triggered manually by a change event on individual switch toggles."""
-        # Grab visibility state out of our flat dictionary map
-        is_visible = self.state.visibilities.get(file_name, True)
-        # print(f"Toggling visibility for {file_name}")
-        
-        actor = self.vtk_actors.get(file_name)
-        if actor:
-            actor.SetVisibility(1 if is_visible else 0)
-            # print(f"Toggled visibility for {file_name}: {'Visible' if is_visible else 'Hidden'}")
-            self.ctrl.view_update()
-    
+   
     def on_visibilities_change(self, visibilities, **kwargs):
         """Automatically fires whenever ANY switch in the UI is flipped."""
         if not visibilities:
             return
             
-        # print(f"Visibilities updated state: {visibilities}")
+        print(f"Visibilities updated state: {visibilities}")
 
         for file_name, is_visible in visibilities.items():
             actor = self.vtk_actors.get(file_name)
@@ -204,9 +187,6 @@ class ObjViewerApp(TrameApp):
                                 color="primary",
                                 hide_details=True,
                                 density="compact",
-                                # Safely pass just the fileName string argument
-                                # change=(self.toggle_visibility, "fileName"), 
-                                # change="trigger('toggle_visibility', [fileName])", 
                                 update_modelValue="visibilities[fileName] = $event; flushState(['visibilities'])",
                             )
                             
