@@ -82,6 +82,7 @@ class ObjViewerApp(TrameApp):
         if actor:
             # Convert Python boolean to VTK int flag (1 = True, 0 = False)
             actor.SetVisibility(1 if is_visible else 0)
+            print("Toggled visibility for {}: {}".format(file_name, "Visible" if is_visible else "Hidden"))
             self.ctrl.view_update()
 
 
@@ -101,7 +102,7 @@ class ObjViewerApp(TrameApp):
         # 2. Read Data & Get Range
         # ---------------------------------------------------------------------
         reader = vtk.vtkStructuredPointsReader()
-        reader.SetFileName(Path("/Users/marcellens/dev/3jsdemo/soln_2048x2048x128.vtk"))
+        reader.SetFileName(Path("/Users/marcellens/data/soln_2048x2048x128.vtk"))
         reader.Update()
 
         volume_data = reader.GetOutput()
@@ -141,26 +142,41 @@ class ObjViewerApp(TrameApp):
         # ---------------------------------------------------------------------
         # 5. Extract and Map the Slice 
         # ---------------------------------------------------------------------
-        reslice = vtk.vtkImageReslice()
-        reslice.SetInputConnection(reader.GetOutputPort())
-        reslice.SetOutputDimensionality(2)
-        reslice.SetInterpolationModeToLinear()
+        # 1. Create the slicing plane aligned with your volume's center
+        plane = vtk.vtkPlane()
+        plane.SetOrigin(center[0], center[1], center[2])
+        plane.SetNormal(0, 0, 1) # Normal pointing up Z-axis (Axial slice)
 
-        reslice_axes = vtk.vtkMatrix4x4()
-        reslice_axes.Identity()
-        reslice_axes.SetElement(0, 3, center[0])
-        reslice_axes.SetElement(1, 3, center[1])
-        reslice_axes.SetElement(2, 3, center[2])
-        reslice.SetResliceAxes(reslice_axes)
-        reslice.Update()
+        # 2. Use vtkCutter to extract a pure geometric slice
+        cutter = vtk.vtkCutter()
+        cutter.SetInputConnection(reader.GetOutputPort())
+        cutter.SetCutFunction(plane)
+        cutter.Update() # Force generation of PolyData geometries
 
-        # CONVERT TO GEOMETRY: This ensures Trame's local WebGL view can render it perfectly
-        surface_filter = vtk.vtkImageDataGeometryFilter()
-        surface_filter.SetInputConnection(reslice.GetOutputPort())
+        # This is another option
+        # ++++++++++++++++++++++++++++++++++
+        # reslice = vtk.vtkImageReslice()
+        # reslice.SetInputConnection(reader.GetOutputPort())
+        # reslice.SetOutputDimensionality(2)
+        # reslice.SetInterpolationModeToLinear()
+
+        # reslice_axes = vtk.vtkMatrix4x4()
+        # reslice_axes.Identity()
+        # reslice_axes.SetElement(0, 3, center[0])
+        # reslice_axes.SetElement(1, 3, center[1])
+        # reslice_axes.SetElement(2, 3, center[2])
+        # reslice.SetResliceAxes(reslice_axes)
+        # reslice.Update()
+
+        # # CONVERT TO GEOMETRY: This ensures Trame's local WebGL view can render it perfectly
+        # surface_filter = vtk.vtkImageDataGeometryFilter()
+        # surface_filter.SetInputConnection(reslice.GetOutputPort())
+
 
         # Standard PolyData mapper maps the slice geometry and applies the color map
         sliceMapper = vtk.vtkPolyDataMapper()
-        sliceMapper.SetInputConnection(surface_filter.GetOutputPort())
+        # sliceMapper.SetInputConnection(surface_filter.GetOutputPort())
+        sliceMapper.SetInputConnection(cutter.GetOutputPort())
         sliceMapper.SetLookupTable(lut)
         sliceMapper.SetScalarRange(scalar_range)
 
