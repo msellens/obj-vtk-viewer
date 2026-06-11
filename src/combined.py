@@ -1,13 +1,14 @@
 import os
 from pathlib import Path
 from trame.app import TrameApp
-from trame.ui.vuetify3 import SinglePageWithDrawerLayout
+# from trame.ui.vuetify3 import SinglePageWithDrawerLayout
+from trame.ui.vuetify3 import SinglePageLayout
 from trame.widgets import vuetify3 as v3
 from trame.widgets import vtk as vtk3
+from trame.widgets import html
 
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 import vtk
-
 
 class ObjViewerApp(TrameApp):
     def __init__(self, server=None):
@@ -78,7 +79,7 @@ class ObjViewerApp(TrameApp):
         if not visibilities:
             return
             
-        print(f"Visibilities updated state: {visibilities}")
+        # print(f"Visibilities updated state: {visibilities}")
 
         for file_name, is_visible in visibilities.items():
             actor = self.vtk_actors.get(file_name)
@@ -157,48 +158,60 @@ class ObjViewerApp(TrameApp):
                 self.html_view.update()
 
     def _build_ui(self):
-        with SinglePageWithDrawerLayout(self.server) as layout:
+        with SinglePageLayout(self.server) as layout:
             layout.title.set_text("Trame OBJ Directory Viewer (Fixed Rendering State)")
-
-            with layout.drawer:
-                with v3.VContainer(fluid=True):
-                    v3.VTextField(
-                        v_model=("directory_path",),
-                        label="Absolute Directory Path",
-                        prepend_inner_icon="mdi-folder-open",
-                        variant="outlined",
-                        density="compact",
-                        clearable=True,
-                    )
-
-                v3.VDivider()
-
-                # Loop through flat filenames instead of raw objects
-                with v3.VList(v_if="files_list.length > 0"):
-                    with v3.VListItem(
-                        v_for="(fileName, index) in files_list",
-                        key="index",
-                        title=("fileName",)
-                    ):
-                        with v3.Template(v_slot_append=True):
-                            v3.VSwitch(
-                                # Bind target dynamically to visibilities['your_file_name.obj']
-                                v_model=("visibilities[fileName]",),
-                                color="primary",
-                                hide_details=True,
-                                density="compact",
-                                update_modelValue="visibilities[fileName] = $event; flushState(['visibilities'])",
-                            )
-                            
-                with v3.VContainer(v_else=True, classes="text-center text-grey mt-5"):
-                    v3.VIcon("mdi-file-cad", size="x-large")
-                    v3.VCardText(html="Provide a valid path containing .obj models.")
-
             with layout.content:
-                with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
-                    html_view = vtk3.VtkLocalView(self.renderWindow)
-                    self.ctrl.view_update = html_view.update
-                    self.ctrl.on_server_ready.add(html_view.update)
+                        
+                # Main layout container holding side-by-side sheets
+                with v3.VContainer(fluid=True, classes="d-flex fill-height pa-0"):
+                    
+                    # Left Sidebar: Standard HTML div wrapped in Vuetify styling
+                    # Using CSS "resize: horizontal" gives us a native drag handle
+                    with html.Div(
+                        style="resize: horizontal; display: flex; flex-direction: column; width: 300px; min-width: 150px; max-width: 1500px; border-right: 1px solid #ccc;",
+                        classes="fill-height bg-grey-lighten-4 pa-4"
+                    ):
+                        # OBJ Directory Panel
+                        v3.VTextField(
+                            v_model=("directory_path",),
+                            label="Absolute Directory Path",
+                            prepend_inner_icon="mdi-folder-open",
+                            variant="outlined",
+                            density="compact",
+                            clearable=True,
+                            keydown_enter="flushState(['directory_path'])",
+                            click_clear="directory_path = ''; flushState(['directory_path'])"                        )
+
+                        v3.VDivider(classes="my-3")
+
+                        with html.Div(style="flex-grow: 1; overflow-y: auto;"):
+                            # Loop through flat filenames instead of raw objects
+                            with v3.VList(v_if="files_list.length > 0"):
+                                with v3.VListItem(
+                                    v_for="(fileName, index) in files_list",
+                                    key="index",
+                                    title=("fileName",)
+                                ):
+                                    with v3.Template(v_slot_append=True):
+                                        v3.VSwitch(
+                                            # Bind target dynamically to visibilities['your_file_name.obj']
+                                            v_model=("visibilities[fileName]",),
+                                            color="primary",
+                                            hide_details=True,
+                                            density="compact",
+                                            update_modelValue="visibilities[fileName] = $event; flushState(['visibilities'])",
+                                        )
+                                        
+                            with v3.VContainer(v_else=True, classes="text-center text-grey mt-5"):
+                                v3.VIcon("mdi-file-cad", size="x-large")
+                                v3.VCardText(html="Provide a valid path containing .obj models.")
+                    
+                    with v3.VSheet(classes="flex-grow-1 fill-height pa-4"):
+                        # Main VTK View
+                        with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
+                            html_view = vtk3.VtkLocalView(self.renderWindow)
+                            self.ctrl.view_update = html_view.update
+                            self.ctrl.on_server_ready.add(html_view.update)
 
 def main():
     app = ObjViewerApp()
