@@ -5,15 +5,18 @@ from trame.ui.vuetify3 import SinglePageWithDrawerLayout
 from trame.widgets import vuetify3 as v3
 from trame.widgets import vtk as vtk3
 
-# Force VTK to load its OpenGL2 rendering backend
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 import vtk
+
+def toggle_visibility(file_name):
+    """Controller method to toggle visibility of a specific file's actor."""
+    app = ObjViewerApp.get_instance()
+    app.toggle_visibility(file_name)
+    
 
 class ObjViewerApp(TrameApp):
     def __init__(self, server=None):
         super().__init__(server)
-        # self._server = get_server()
-        # self.state, self.ctrl = self.server.state, self.server.controller
 
         self.vtk_actors = {}  # Local cache for VTK actors keyed by file name
 
@@ -21,9 +24,12 @@ class ObjViewerApp(TrameApp):
 
         # Initialize shared state variables
         self.state.setdefault("directory_path", "")
-        self.state.setdefault("files_list", [])  # Holds items: {"name": "...", "visible": True}
+        self.state.setdefault("files_list", [])     # Pure list of strings/names
+        self.state.setdefault("visibilities", {})   # Flat dictionary: {"filename.obj": True}
 
         self.state.change("directory_path")(self.load_directory)
+
+        self.state.change("visibilities")(self.on_visibilities_change)
 
         self._build_ui()
 
@@ -38,6 +44,7 @@ class ObjViewerApp(TrameApp):
         self.vtk_actors.clear()
 
         ui_files = []
+        initial_visibilities = {}
         path = Path(directory_path)
         
         # Scan directory for OBJ files
@@ -45,7 +52,6 @@ class ObjViewerApp(TrameApp):
             file_name = obj_file.name
             
             try:
-                # Initialize VTK Pipeline for this OBJ file
                 reader = vtk.vtkOBJReader()
                 reader.SetFileName(str(obj_file))
                 
@@ -55,76 +61,77 @@ class ObjViewerApp(TrameApp):
                 actor = vtk.vtkActor()
                 actor.SetMapper(mapper)
                 
-                # Add to VTK scene
                 self.renderer.AddActor(actor)
-                
-                # Cache the actor reference locally
                 self.vtk_actors[file_name] = actor
                 
-                # Append entry for the Vuetify state
-                ui_files.append({"name": file_name, "visible": True})
+                # Append string representation
+                ui_files.append(file_name)
+                initial_visibilities[file_name] = True
                 
             except Exception as e:
                 print(f"Error loading {file_name}: {e}")
 
-        # Update state to refresh UI drawer and reset the camera view
+        # Update state cleanly using explicit assignments
+        self.state.visibilities = initial_visibilities
         self.state.files_list = ui_files
+        
         self.renderer.ResetCamera()
         self.ctrl.view_update()
 
-
-    def toggle_visibility(self, item):
+    def toggle_visibility(self, file_name):
         """Triggered manually by a change event on individual switch toggles."""
-        file_name = item.get("name")
-        is_visible = item.get("visible", True)
+        # Grab visibility state out of our flat dictionary map
+        is_visible = self.state.visibilities.get(file_name, True)
+        # print(f"Toggling visibility for {file_name}")
         
         actor = self.vtk_actors.get(file_name)
         if actor:
-            # Convert Python boolean to VTK int flag (1 = True, 0 = False)
             actor.SetVisibility(1 if is_visible else 0)
-            print("Toggled visibility for {}: {}".format(file_name, "Visible" if is_visible else "Hidden"))
+            # print(f"Toggled visibility for {file_name}: {'Visible' if is_visible else 'Hidden'}")
             self.ctrl.view_update()
+    
+    def on_visibilities_change(self, visibilities, **kwargs):
+        """Automatically fires whenever ANY switch in the UI is flipped."""
+        if not visibilities:
+            return
+            
+        # print(f"Visibilities updated state: {visibilities}")
 
+        for file_name, is_visible in visibilities.items():
+            actor = self.vtk_actors.get(file_name)
+            if actor:
+                # Synchronize the VTK actor state with the updated dict state
+                actor.SetVisibility(1 if is_visible else 0)
+                # print(f"Toggled visibility for {file_name}: {'Visible' if is_visible else 'Hidden'}")
+        
+        # Force the render window to update the view
+        self.ctrl.view_update()
 
     def setup_vtk_pipeline(self):
-        # ---------------------------------------------------------------------
-        # 1. Setup Renderer and Window
-        # ---------------------------------------------------------------------
         self.renderer = vtk.vtkRenderer()
         self.renderWindow = vtk.vtkRenderWindow()
+        self.renderWindow.SetOffScreenRendering(1) # Keep headless
         self.renderWindow.AddRenderer(self.renderer)
 
         self.renderWindowInteractor = vtk.vtkRenderWindowInteractor()
         self.renderWindowInteractor.SetRenderWindow(self.renderWindow)
         self.renderWindowInteractor.GetInteractorStyle().SetCurrentStyleToTrackballCamera()
 
-        # ---------------------------------------------------------------------
-        # 2. Read Data & Get Range
-        # ---------------------------------------------------------------------
+        # Dummy pathing example - swap out for your real vtk structure file
         reader = vtk.vtkStructuredPointsReader()
         reader.SetFileName(Path("/Users/marcellens/data/soln_2048x2048x128.vtk"))
         reader.Update()
 
         volume_data = reader.GetOutput()
         center = volume_data.GetCenter()
-        print(f"Center coordinates: X: {center[0]:.2f}, Y: {center[1]:.2f}, Z: {center[2]:.2f}")
-
-        # Safely grab the actual min/max scalar range of your dataset
         scalar_range = volume_data.GetPointData().GetScalars().GetRange()
-        print(f"Data Scalar Range: Min={scalar_range[0]:.2f}, Max={scalar_range[1]:.2f}")
 
-        # ---------------------------------------------------------------------
-        # 3. Create a Lookup Table (Color Map)
-        # ---------------------------------------------------------------------
-        # This guarantees your raw data values map onto visible colors
         lut = vtk.vtkLookupTable()
         lut.SetTableRange(scalar_range[0], scalar_range[1])
-        lut.SetHueRange(0.667, 0.0)  # Blue-to-Red rainbow spectrum
+        lut.SetHueRange(0.667, 0.0)
         lut.Build()
 
-        # ---------------------------------------------------------------------
-        # 4. Isosurface Mesh (Your existing working code)
-        # ---------------------------------------------------------------------
+        # Isosurface Mesh
         iso = vtk.vtkContourFilter()
         iso.SetInputConnection(reader.GetOutputPort())
         iso.SetValue(0, 50)
@@ -136,46 +143,19 @@ class ObjViewerApp(TrameApp):
         isoActor = vtk.vtkActor()
         isoActor.SetMapper(isoMapper)
         isoActor.GetProperty().SetRepresentationToWireframe()
-        isoActor.GetProperty().SetOpacity(0.15)  # Slightly more translucent to see slice
-        self.renderer.AddActor(isoActor)
+        isoActor.GetProperty().SetOpacity(0.15)
+        # self.renderer.AddActor(isoActor)
 
-        # ---------------------------------------------------------------------
-        # 5. Extract and Map the Slice 
-        # ---------------------------------------------------------------------
-        # 1. Create the slicing plane aligned with your volume's center
+        # Cutter Slice
         plane = vtk.vtkPlane()
         plane.SetOrigin(center[0], center[1], center[2])
-        plane.SetNormal(0, 0, 1) # Normal pointing up Z-axis (Axial slice)
+        plane.SetNormal(0, 0, 1)
 
-        # 2. Use vtkCutter to extract a pure geometric slice
         cutter = vtk.vtkCutter()
         cutter.SetInputConnection(reader.GetOutputPort())
         cutter.SetCutFunction(plane)
-        cutter.Update() # Force generation of PolyData geometries
 
-        # This is another option
-        # ++++++++++++++++++++++++++++++++++
-        # reslice = vtk.vtkImageReslice()
-        # reslice.SetInputConnection(reader.GetOutputPort())
-        # reslice.SetOutputDimensionality(2)
-        # reslice.SetInterpolationModeToLinear()
-
-        # reslice_axes = vtk.vtkMatrix4x4()
-        # reslice_axes.Identity()
-        # reslice_axes.SetElement(0, 3, center[0])
-        # reslice_axes.SetElement(1, 3, center[1])
-        # reslice_axes.SetElement(2, 3, center[2])
-        # reslice.SetResliceAxes(reslice_axes)
-        # reslice.Update()
-
-        # # CONVERT TO GEOMETRY: This ensures Trame's local WebGL view can render it perfectly
-        # surface_filter = vtk.vtkImageDataGeometryFilter()
-        # surface_filter.SetInputConnection(reslice.GetOutputPort())
-
-
-        # Standard PolyData mapper maps the slice geometry and applies the color map
         sliceMapper = vtk.vtkPolyDataMapper()
-        # sliceMapper.SetInputConnection(surface_filter.GetOutputPort())
         sliceMapper.SetInputConnection(cutter.GetOutputPort())
         sliceMapper.SetLookupTable(lut)
         sliceMapper.SetScalarRange(scalar_range)
@@ -184,13 +164,9 @@ class ObjViewerApp(TrameApp):
         sliceActor.SetMapper(sliceMapper)
         self.renderer.AddActor(sliceActor)
 
-        # ---------------------------------------------------------------------
-        # 6. Finalize Render Window State
-        # ---------------------------------------------------------------------
         self.renderer.SetBackground(0.1, 0.2, 0.4)
         self.renderer.ResetCamera()
 
-        # Synchronize with Trame lifecycle when the server goes live
         @self.server.controller.on_server_ready.add
         def ctrl_ready(**kwargs):
             self.renderer.ResetCamera()
@@ -198,11 +174,9 @@ class ObjViewerApp(TrameApp):
                 self.html_view.update()
 
     def _build_ui(self):
-        """Defines the Vuetify structure using layout wrappers."""
         with SinglePageWithDrawerLayout(self.server) as layout:
-            layout.title.set_text("Trame OBJ Directory Viewer (Class Based)")
+            layout.title.set_text("Trame OBJ Directory Viewer (Fixed Rendering State)")
 
-            # Drawer UI
             with layout.drawer:
                 with v3.VContainer(fluid=True):
                     v3.VTextField(
@@ -216,27 +190,30 @@ class ObjViewerApp(TrameApp):
 
                 v3.VDivider()
 
+                # Loop through flat filenames instead of raw objects
                 with v3.VList(v_if="files_list.length > 0"):
                     with v3.VListItem(
-                        v_for="(item, index) in files_list",
+                        v_for="(fileName, index) in files_list",
                         key="index",
-                        title=("item.name",)
+                        title=("fileName",)
                     ):
                         with v3.Template(v_slot_append=True):
                             v3.VSwitch(
-                                v_model=("item.visible",),
+                                # Bind target dynamically to visibilities['your_file_name.obj']
+                                v_model=("visibilities[fileName]",),
                                 color="primary",
                                 hide_details=True,
                                 density="compact",
-                                # Point directly to the bound instance method
-                                change=(self.toggle_visibility, "item"), 
+                                # Safely pass just the fileName string argument
+                                # change=(self.toggle_visibility, "fileName"), 
+                                # change="trigger('toggle_visibility', [fileName])", 
+                                update_modelValue="visibilities[fileName] = $event; flushState(['visibilities'])",
                             )
                             
                 with v3.VContainer(v_else=True, classes="text-center text-grey mt-5"):
                     v3.VIcon("mdi-file-cad", size="x-large")
                     v3.VCardText(html="Provide a valid path containing .obj models.")
 
-            # Main Context View
             with layout.content:
                 with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
                     html_view = vtk3.VtkLocalView(self.renderWindow)
