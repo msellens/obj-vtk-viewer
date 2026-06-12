@@ -1,9 +1,11 @@
 import os
+import asyncio
 from pathlib import Path
 from trame.app import TrameApp
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout
 from trame.widgets import vuetify3 as v3
 from trame.widgets import vtk as vtk3
+from trame.widgets import html
 
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 import vtk
@@ -19,14 +21,77 @@ class ObjViewerApp(TrameApp):
 
         # Initialize shared state variables
         self.state.setdefault("directory_path", "")
+        self.state.setdefault("vtk_file", "/Users/marcellens/data/soln_2048x2048x128.vtk")
         self.state.setdefault("files_list", [])     # Pure list of strings/names
         self.state.setdefault("visibilities", {})   # Flat dictionary: {"filename.obj": True}
+        self.state.setdefault("loading", True)
 
         self.state.change("directory_path")(self.load_directory)
+        self.state.change("vtk_file")(self.load_vtk_file)
 
         self.state.change("visibilities")(self.on_visibilities_change)
-
+        
         self._build_ui()
+    
+    def _process_vtk_pipeline(self, vtk_file):
+            print(f"Loading VTK file: {vtk_file}")
+            reader = vtk.vtkStructuredPointsReader()
+            reader.SetFileName(vtk_file)
+            reader.Update()
+
+            volume_data = reader.GetOutput()
+            center = volume_data.GetCenter()
+            scalar_range = volume_data.GetPointData().GetScalars().GetRange()
+
+            lut = vtk.vtkLookupTable()
+            lut.SetTableRange(scalar_range[0], scalar_range[1])
+            lut.SetHueRange(0.667, 0.0)
+            lut.Build()
+            
+            # Cutter Slice
+            plane = vtk.vtkPlane()
+            plane.SetOrigin(center[0], center[1], center[2])
+            plane.SetNormal(0, 0, 1)
+
+            cutter = vtk.vtkCutter()
+            cutter.SetInputConnection(reader.GetOutputPort())
+            cutter.SetCutFunction(plane)
+
+            sliceMapper = vtk.vtkPolyDataMapper()
+            sliceMapper.SetInputConnection(cutter.GetOutputPort())
+            sliceMapper.SetLookupTable(lut)
+            sliceMapper.SetScalarRange(scalar_range)
+
+            sliceActor = vtk.vtkActor()
+            sliceActor.SetMapper(sliceMapper)
+            self.renderer.AddActor(sliceActor)
+
+            # Remove previous VTK actors before adding new ones
+            actor = self.vtk_actors.get("vtk_slice_actor")
+            if actor:
+                self.renderer.RemoveActor(actor)
+            self.vtk_actors["vtk_slice_actor"] = sliceActor
+
+
+    async def load_vtk_file(self, vtk_file, **kwargs):
+        """Triggered automatically when vtk_file changes via the UI text input."""
+        if not vtk_file or not os.path.isfile(vtk_file):
+            return
+
+        # 1. Set loading to True and flush to the client immediately
+        self.state.loading = True
+        self.state.flush()
+
+        try:
+            await asyncio.to_thread(self._process_vtk_pipeline, vtk_file)
+
+            self.renderer.SetBackground(0.1, 0.2, 0.4)
+            self.renderer.ResetCamera()
+            self.ctrl.view_update()
+        finally:
+            # 2. Reset the loading state when done (or if an error occurs)
+            self.state.loading = False
+            self.state.flush()
 
     def load_directory(self, directory_path, **kwargs):
         """Triggered automatically when directory_path changes via the UI text input."""
@@ -78,7 +143,7 @@ class ObjViewerApp(TrameApp):
         if not visibilities:
             return
             
-        print(f"Visibilities updated state: {visibilities}")
+        # print(f"Visibilities updated state: {visibilities}")
 
         for file_name, is_visible in visibilities.items():
             actor = self.vtk_actors.get(file_name)
@@ -100,53 +165,6 @@ class ObjViewerApp(TrameApp):
         self.renderWindowInteractor.SetRenderWindow(self.renderWindow)
         self.renderWindowInteractor.GetInteractorStyle().SetCurrentStyleToTrackballCamera()
 
-        # Dummy pathing example - swap out for your real vtk structure file
-        reader = vtk.vtkStructuredPointsReader()
-        reader.SetFileName(Path("/Users/marcellens/data/soln_2048x2048x128.vtk"))
-        reader.Update()
-
-        volume_data = reader.GetOutput()
-        center = volume_data.GetCenter()
-        scalar_range = volume_data.GetPointData().GetScalars().GetRange()
-
-        lut = vtk.vtkLookupTable()
-        lut.SetTableRange(scalar_range[0], scalar_range[1])
-        lut.SetHueRange(0.667, 0.0)
-        lut.Build()
-
-        # Isosurface Mesh
-        iso = vtk.vtkContourFilter()
-        iso.SetInputConnection(reader.GetOutputPort())
-        iso.SetValue(0, 50)
-
-        isoMapper = vtk.vtkPolyDataMapper()
-        isoMapper.SetInputConnection(iso.GetOutputPort())
-        isoMapper.ScalarVisibilityOff()
-
-        isoActor = vtk.vtkActor()
-        isoActor.SetMapper(isoMapper)
-        isoActor.GetProperty().SetRepresentationToWireframe()
-        isoActor.GetProperty().SetOpacity(0.15)
-        # self.renderer.AddActor(isoActor)
-
-        # Cutter Slice
-        plane = vtk.vtkPlane()
-        plane.SetOrigin(center[0], center[1], center[2])
-        plane.SetNormal(0, 0, 1)
-
-        cutter = vtk.vtkCutter()
-        cutter.SetInputConnection(reader.GetOutputPort())
-        cutter.SetCutFunction(plane)
-
-        sliceMapper = vtk.vtkPolyDataMapper()
-        sliceMapper.SetInputConnection(cutter.GetOutputPort())
-        sliceMapper.SetLookupTable(lut)
-        sliceMapper.SetScalarRange(scalar_range)
-
-        sliceActor = vtk.vtkActor()
-        sliceActor.SetMapper(sliceMapper)
-        self.renderer.AddActor(sliceActor)
-
         self.renderer.SetBackground(0.1, 0.2, 0.4)
         self.renderer.ResetCamera()
 
@@ -163,8 +181,16 @@ class ObjViewerApp(TrameApp):
             with layout.drawer:
                 with v3.VContainer(fluid=True):
                     v3.VTextField(
+                        v_model=("vtk_file",),
+                        label="Path to VTK File",
+                        prepend_inner_icon="mdi-folder-open",
+                        variant="outlined",
+                        density="compact",
+                        clearable=True,
+                    )
+                    v3.VTextField(
                         v_model=("directory_path",),
-                        label="Absolute Directory Path",
+                        label="Path to OBJ Files",
                         prepend_inner_icon="mdi-folder-open",
                         variant="outlined",
                         density="compact",
@@ -196,9 +222,37 @@ class ObjViewerApp(TrameApp):
 
             with layout.content:
                 with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
-                    html_view = vtk3.VtkLocalView(self.renderWindow)
-                    self.ctrl.view_update = html_view.update
-                    self.ctrl.on_server_ready.add(html_view.update)
+                    with v3.VContainer(
+                        fluid=True, 
+                        classes="pa-0 fill-height", 
+                        style="position: relative; overflow: hidden;"
+                    ):
+                        html_view = vtk3.VtkLocalView(self.renderWindow)
+                        self.ctrl.view_update = html_view.update
+                        self.ctrl.on_server_ready.add(html_view.update)
+
+                        # 2. Loading Overlay container centered on top
+                        with html.Div(
+                            v_if="loading",
+                            classes="d-flex flex-column justify-center align-center position-absolute fill-height",
+                            style=(
+                                "position: absolute; "
+                                "top: 0; left: 0; right: 0; bottom: 0; "
+                                "width: 100%; height: 100%; "
+                                "background: rgba(255, 255, 255, 0.7); "
+                                "z-index: 5;"
+                            )
+                        ):
+                            v3.VProgressCircular(
+                                indeterminate=True, 
+                                color="primary", 
+                                size=64,
+                                classes="mx-auto"
+                            )
+                            html.Div(
+                                "Loading VTK File...",
+                                classes="text-h6 text-center text-primary mt-4"
+                            )
 
 def main():
     app = ObjViewerApp()
