@@ -31,9 +31,9 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("slice_min", 0.0)
         self.state.setdefault("slice_max", 100.0)
         self.state.setdefault("slice_enabled", False)
+        self.state.setdefault("selected_files", {})   
+        self.state.setdefault("key_pressed", "None")
 
-        # Bind the observer for when the slider value changes
-        self.state.change("slice_value")(self.on_slice_value_change)
         self._build_ui()
 
         self.state.change("directory_path")(self.load_directory)
@@ -41,6 +41,9 @@ class ObjViewerApp(TrameApp):
         self.state.change("visibilities")(self.on_visibilities_change)
         self.state.change("slice_value")(self.on_slice_value_change)
         self.state.change("slice_visible")(self.on_slice_visibility_toggle)
+        self.state.change("selected_files")(self.on_selection_change)
+        self.state.change("slice_value")(self.on_slice_value_change)
+        self.state.change("key_pressed")(self.on_key_pressed)
 
     def _process_vtk_pipeline(self, vtk_file):
         """Heavy blocking operations run safely inside a background thread."""
@@ -127,6 +130,7 @@ class ObjViewerApp(TrameApp):
 
         ui_files = []
         initial_visibilities = {}
+        initial_selections = {}
         path = Path(directory_path)
         
         # Scan directory for OBJ files
@@ -139,7 +143,7 @@ class ObjViewerApp(TrameApp):
                 
                 decimate = vtk.vtkDecimatePro()
                 decimate.SetInputConnection(reader.GetOutputPort())
-                
+
                 # Set reduction target (e.g., 0.70 means remove 70% of triangles)
                 decimate.SetTargetReduction(0.70) 
                 decimate.SetBoundaryVertexDeletion(0)  # Preserve boundaries
@@ -157,17 +161,39 @@ class ObjViewerApp(TrameApp):
                 # Append string representation
                 ui_files.append(file_name)
                 initial_visibilities[file_name] = True
-                
+                initial_selections[file_name] = False
+
             except Exception as e:
                 print(f"Error loading {file_name}: {e}")
 
         # Update state cleanly using explicit assignments
         self.state.visibilities = initial_visibilities
+        self.state.selected_files = initial_selections
         self.state.files_list = ui_files
         
         self.renderer.ResetCamera()
         self.ctrl.view_update()
    
+    def on_selection_change(self, selected_files, **kwargs):
+        """Fires whenever an item is selected or deselected in the list."""
+        if not selected_files:
+            return
+
+        for file_name, is_selected in selected_files.items():
+            actor = self.vtk_actors.get(file_name)
+            if actor:
+                if is_selected:
+                    # Highlight color (Yellow)
+                    actor.GetProperty().SetColor(1.0, 0.9, 0.0)
+                    # Optional: boost ambient lighting slightly to make it pop
+                    actor.GetProperty().SetAmbient(0.2)
+                else:
+                    # Default material color (White/Grey)
+                    actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+                    actor.GetProperty().SetAmbient(0.0)
+
+        self.ctrl.view_update()
+
     def on_visibilities_change(self, visibilities, **kwargs):
         """Automatically fires whenever ANY switch in the UI is flipped."""
         if not visibilities:
@@ -225,9 +251,65 @@ class ObjViewerApp(TrameApp):
             if hasattr(self, 'html_view'):
                 self.html_view.update()
 
+    def on_focus_selected_objects(self, event_list=None, **kwargs):
+        # Print the incoming event data to your terminal to inspect it
+        if event_list:
+            print(f"Keystroke Event Data: {event_list}")
+            # Example: check if the key object is present
+            # key_pressed = event_list[0].get("key")
+
+        """Calculates the bounding box of all selected actors and frames the camera on them."""
+        print("Focus on selected objects triggered")
+        # Get dictionary of selection states from Trame
+        selected_dict = self.state.selected_files or {}
+        
+        # Filter down to the names of the files that are actively selected (True)
+        active_selections = [name for name, is_sel in selected_dict.items() if is_sel]
+        
+        # Fallback: If nothing is selected, reset camera to the entire scene
+        if not active_selections:
+            print("No objects selected to focus. Resetting camera to all visible elements.")
+            self.renderer.ResetCamera()
+            self.ctrl.view_update()
+            return
+
+        # Initialize global bound tracking array
+        # Format: [xmin, xmax, ymin, ymax, zmin, zmax]
+        global_bounds = [float('inf'), float('-inf'), float('inf'), float('-inf'), float('inf'), float('-inf')]
+        valid_actor_found = False
+
+        for file_name in active_selections:
+            actor = self.vtk_actors.get(file_name)
+            if actor and actor.GetVisibility():
+                valid_actor_found = True
+                bounds = actor.GetBounds() # Returns tuple: (xmin, xmax, ymin, ymax, zmin, zmax)
+                
+                # Expand global bounding limits to include this actor
+                global_bounds[0] = min(global_bounds[0], bounds[0]) # xmin
+                global_bounds[1] = max(global_bounds[1], bounds[1]) # xmax
+                global_bounds[2] = min(global_bounds[2], bounds[2]) # ymin
+                global_bounds[3] = max(global_bounds[3], bounds[3]) # ymax
+                global_bounds[4] = min(global_bounds[4], bounds[4]) # zmin
+                global_bounds[5] = max(global_bounds[5], bounds[5]) # zmax
+
+        if valid_actor_found:
+            print(f"Centering view on selected bounds: {global_bounds}")
+            # Center and frame the camera safely using VTK's native bounds utility
+            self.renderer.ResetCamera(global_bounds)
+            self.ctrl.view_update()
+
+    def on_key_pressed(self, **kwargs):
+        print(f"Key pressed state: {self.state.key_pressed}")
+        if self.state.key_pressed == "F":
+            self.on_focus_selected_objects()
+
+        self.state.key_pressed = "None"  # Reset after handling
+
     def _build_ui(self):
-        with SinglePageWithDrawerLayout(self.server) as layout:
+        with SinglePageWithDrawerLayout(self.server, **{"@window:keydown.esc": "self.ctrl.on_escape()"}) as layout:
             layout.title.set_text("Trame OBJ Directory Viewer (Fixed Rendering State)")
+            
+            layout.drawer.width = 400
 
             with layout.drawer:
                 with v3.VContainer(fluid=True):
@@ -292,8 +374,27 @@ class ObjViewerApp(TrameApp):
                     with v3.VListItem(
                         v_for="(fileName, index) in files_list",
                         key="index",
-                        title=("fileName",)
+                        # title=("fileName",)
+                        classes="{'bg-yellow-lighten-5': selected_files[fileName]}"
                     ):
+                        # Prepend: Selection Checkbox
+                        with v3.Template(v_slot_prepend=True):
+                            v3.VCheckboxBtn(
+                                v_model=("selected_files[fileName]",),
+                                color="amber-darken-2",
+                                density="compact",
+                                hide_details=True,
+                                update_modelValue="selected_files[fileName] = $event; flushState(['selected_files'])"
+                            )
+                        # Center: Title text (styled to match highlight state)
+                        v3.VListItemTitle(
+                            "{{ fileName }}",
+                            classes=(
+                                "{'text-amber-darken-3 font-weight-bold': selected_files[fileName], "
+                                "'text-right flex-grow-1': true}"
+                            )
+                        )
+
                         with v3.Template(v_slot_append=True):
                             v3.VSwitch(
                                 # Bind target dynamically to visibilities['your_file_name.obj']
@@ -309,38 +410,44 @@ class ObjViewerApp(TrameApp):
                     v3.VCardText(html="Provide a valid path containing .obj models.")
 
             with layout.content:
-                with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
-                    with v3.VContainer(
-                        fluid=True, 
-                        classes="pa-0 fill-height", 
-                        style="position: relative; overflow: hidden;"
-                    ):
-                        html_view = vtk3.VtkLocalView(self.renderWindow)
-                        self.ctrl.view_update = html_view.update
-                        self.ctrl.on_server_ready.add(html_view.update)
-
-                        # 2. Loading Overlay container centered on top
-                        with html.Div(
-                            v_if="loading",
-                            classes="d-flex flex-column justify-center align-center position-absolute fill-height",
-                            style=(
-                                "position: absolute; "
-                                "top: 0; left: 0; right: 0; bottom: 0; "
-                                "width: 100%; height: 100%; "
-                                "background: rgba(255, 255, 255, 0.7); "
-                                "z-index: 5;"
-                            )
+                with v3.VApp(
+                    v_on_keydown_space="key_pressed = 'Space'",
+                    v_on_keydown_enter="key_pressed = 'Enter'",
+                    v_on_keydown_s="key_pressed = 'S'",
+                    v_on_keydown_f="key_pressed = 'F'"
+                ):
+                    with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
+                        with v3.VContainer(
+                            fluid=True, 
+                            classes="pa-0 fill-height", 
+                            style="position: relative; overflow: hidden;"
                         ):
-                            v3.VProgressCircular(
-                                indeterminate=True, 
-                                color="primary", 
-                                size=64,
-                                classes="mx-auto"
-                            )
-                            html.Div(
-                                "Loading VTK File...",
-                                classes="text-h6 text-center text-primary mt-4"
-                            )
+                            html_view = vtk3.VtkLocalView(self.renderWindow)
+                            self.ctrl.view_update = html_view.update
+                            self.ctrl.on_server_ready.add(html_view.update)
+
+                            # 2. Loading Overlay container centered on top
+                            with html.Div(
+                                v_if="loading",
+                                classes="d-flex flex-column justify-center align-center position-absolute fill-height",
+                                style=(
+                                    "position: absolute; "
+                                    "top: 0; left: 0; right: 0; bottom: 0; "
+                                    "width: 100%; height: 100%; "
+                                    "background: rgba(255, 255, 255, 0.7); "
+                                    "z-index: 5;"
+                                )
+                            ):
+                                v3.VProgressCircular(
+                                    indeterminate=True, 
+                                    color="primary", 
+                                    size=64,
+                                    classes="mx-auto"
+                                )
+                                html.Div(
+                                    "Loading VTK File...",
+                                    classes="text-h6 text-center text-primary mt-4"
+                                )
 
 
 def main():
