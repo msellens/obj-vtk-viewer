@@ -1,5 +1,6 @@
 import os
 import asyncio
+import threading
 from pathlib import Path
 from trame.app import TrameApp
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout
@@ -20,79 +21,81 @@ class ObjViewerApp(TrameApp):
         self.setup_vtk_pipeline()
 
         # Initialize shared state variables
+        self.state.setdefault("loading", True)
         self.state.setdefault("directory_path", "")
         self.state.setdefault("vtk_file", "/Users/marcellens/data/soln_2048x2048x128.vtk")
-        self.state.setdefault("files_list", [])     # Pure list of strings/names
-        self.state.setdefault("visibilities", {})   # Flat dictionary: {"filename.obj": True}
-        self.state.setdefault("loading", True)
+        self.state.setdefault("files_list", [])     
+        self.state.setdefault("visibilities", {})   
+
+        self._build_ui()
 
         self.state.change("directory_path")(self.load_directory)
         self.state.change("vtk_file")(self.load_vtk_file)
-
         self.state.change("visibilities")(self.on_visibilities_change)
-        
-        self._build_ui()
-    
+
     def _process_vtk_pipeline(self, vtk_file):
-            print(f"Loading VTK file: {vtk_file}")
-            reader = vtk.vtkStructuredPointsReader()
-            reader.SetFileName(vtk_file)
-            reader.Update()
+        """Heavy blocking operations run safely inside a background thread."""
+        print(f"Loading VTK file in background: {vtk_file}")
+        reader = vtk.vtkStructuredPointsReader()
+        reader.SetFileName(vtk_file)
+        reader.Update()
 
-            volume_data = reader.GetOutput()
-            center = volume_data.GetCenter()
-            scalar_range = volume_data.GetPointData().GetScalars().GetRange()
+        volume_data = reader.GetOutput()
+        center = volume_data.GetCenter()
+        scalar_range = volume_data.GetPointData().GetScalars().GetRange()
 
-            lut = vtk.vtkLookupTable()
-            lut.SetTableRange(scalar_range[0], scalar_range[1])
-            lut.SetHueRange(0.667, 0.0)
-            lut.Build()
+        lut = vtk.vtkLookupTable()
+        lut.SetTableRange(scalar_range[0], scalar_range[1])
+        lut.SetHueRange(0.667, 0.0)
+        lut.Build()
+        
+        plane = vtk.vtkPlane()
+        plane.SetOrigin(center[0], center[1], center[2])
+        plane.SetNormal(0, 0, 1)
+
+        cutter = vtk.vtkCutter()
+        cutter.SetInputConnection(reader.GetOutputPort())
+        cutter.SetCutFunction(plane)
+
+        sliceMapper = vtk.vtkPolyDataMapper()
+        sliceMapper.SetInputConnection(cutter.GetOutputPort())
+        sliceMapper.SetLookupTable(lut)
+        sliceMapper.SetScalarRange(scalar_range)
+
+        sliceActor = vtk.vtkActor()
+        sliceActor.SetMapper(sliceMapper)
+
+        # Safely remove old actor and switch to new one
+        actor = self.vtk_actors.get("vtk_slice_actor")
+        if actor:
+            self.renderer.RemoveActor(actor)
             
-            # Cutter Slice
-            plane = vtk.vtkPlane()
-            plane.SetOrigin(center[0], center[1], center[2])
-            plane.SetNormal(0, 0, 1)
-
-            cutter = vtk.vtkCutter()
-            cutter.SetInputConnection(reader.GetOutputPort())
-            cutter.SetCutFunction(plane)
-
-            sliceMapper = vtk.vtkPolyDataMapper()
-            sliceMapper.SetInputConnection(cutter.GetOutputPort())
-            sliceMapper.SetLookupTable(lut)
-            sliceMapper.SetScalarRange(scalar_range)
-
-            sliceActor = vtk.vtkActor()
-            sliceActor.SetMapper(sliceMapper)
-            self.renderer.AddActor(sliceActor)
-
-            # Remove previous VTK actors before adding new ones
-            actor = self.vtk_actors.get("vtk_slice_actor")
-            if actor:
-                self.renderer.RemoveActor(actor)
-            self.vtk_actors["vtk_slice_actor"] = sliceActor
-
-
+        self.vtk_actors["vtk_slice_actor"] = sliceActor
+        self.renderer.AddActor(sliceActor)
+    
     async def load_vtk_file(self, vtk_file, **kwargs):
         """Triggered automatically when vtk_file changes via the UI text input."""
+        # Safety check: If empty/invalid, turn loading off right away
         if not vtk_file or not os.path.isfile(vtk_file):
+            self.state.loading = False
+            self.state.flush()
             return
 
-        # 1. Set loading to True and flush to the client immediately
         self.state.loading = True
         self.state.flush()
 
         try:
+            # Run heavy work in background thread
             await asyncio.to_thread(self._process_vtk_pipeline, vtk_file)
-
-            self.renderer.SetBackground(0.1, 0.2, 0.4)
+            
             self.renderer.ResetCamera()
             self.ctrl.view_update()
+
         finally:
-            # 2. Reset the loading state when done (or if an error occurs)
+            # This turns off the initial launch loading mask cleanly!
             self.state.loading = False
             self.state.flush()
-
+            
     def load_directory(self, directory_path, **kwargs):
         """Triggered automatically when directory_path changes via the UI text input."""
         if not directory_path or not os.path.isdir(directory_path):
@@ -253,6 +256,7 @@ class ObjViewerApp(TrameApp):
                                 "Loading VTK File...",
                                 classes="text-h6 text-center text-primary mt-4"
                             )
+
 
 def main():
     app = ObjViewerApp()
