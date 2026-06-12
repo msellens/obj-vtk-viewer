@@ -26,12 +26,21 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("vtk_file", "/Users/marcellens/data/soln_2048x2048x128.vtk")
         self.state.setdefault("files_list", [])     
         self.state.setdefault("visibilities", {})   
+        self.state.setdefault("slice_visible", True)
+        self.state.setdefault("slice_value", 0.0)
+        self.state.setdefault("slice_min", 0.0)
+        self.state.setdefault("slice_max", 100.0)
+        self.state.setdefault("slice_enabled", False)
 
+        # Bind the observer for when the slider value changes
+        self.state.change("slice_value")(self.on_slice_value_change)
         self._build_ui()
 
         self.state.change("directory_path")(self.load_directory)
         self.state.change("vtk_file")(self.load_vtk_file)
         self.state.change("visibilities")(self.on_visibilities_change)
+        self.state.change("slice_value")(self.on_slice_value_change)
+        self.state.change("slice_visible")(self.on_slice_visibility_toggle)
 
     def _process_vtk_pipeline(self, vtk_file):
         """Heavy blocking operations run safely inside a background thread."""
@@ -42,13 +51,20 @@ class ObjViewerApp(TrameApp):
 
         volume_data = reader.GetOutput()
         center = volume_data.GetCenter()
+        bounds = volume_data.GetBounds()  # Force bounds computation for accurate range
+        print(f"Center of volume: {center}, Bounds: {bounds}")
         scalar_range = volume_data.GetPointData().GetScalars().GetRange()
 
         lut = vtk.vtkLookupTable()
         lut.SetTableRange(scalar_range[0], scalar_range[1])
         lut.SetHueRange(0.667, 0.0)
         lut.Build()
-        
+        # Push the dynamic range configurations back to the UI state
+        self.state.slice_min = bounds[4]  # Z-min
+        self.state.slice_max = bounds[5]  # Z-max
+        self.state.slice_value = center[2]
+        self.state.slice_enabled = True
+
         plane = vtk.vtkPlane()
         plane.SetOrigin(center[0], center[1], center[2])
         plane.SetNormal(0, 0, 1)
@@ -78,6 +94,7 @@ class ObjViewerApp(TrameApp):
         # Safety check: If empty/invalid, turn loading off right away
         if not vtk_file or not os.path.isfile(vtk_file):
             self.state.loading = False
+            self.state.slice_enabled = False
             self.state.flush()
             return
 
@@ -95,7 +112,7 @@ class ObjViewerApp(TrameApp):
             # This turns off the initial launch loading mask cleanly!
             self.state.loading = False
             self.state.flush()
-            
+
     def load_directory(self, directory_path, **kwargs):
         """Triggered automatically when directory_path changes via the UI text input."""
         if not directory_path or not os.path.isdir(directory_path):
@@ -158,6 +175,25 @@ class ObjViewerApp(TrameApp):
         # Force the render window to update the view
         self.ctrl.view_update()
 
+    def on_slice_value_change(self, slice_value, **kwargs):
+        """Callback fired when the user shifts the VTK scalar range slider."""
+        actor = self.vtk_actors.get("vtk_slice_actor")
+        print(f"New slice value: {slice_value}")
+        if not actor or not hasattr(self, "cutter"):
+            return
+        
+        print(f"Slice value changed")
+        # Example processing: update cutter contour value based on range value
+        self.cutter.SetValue(0, float(slice_value))
+        self.ctrl.view_update()
+
+    def on_slice_visibility_toggle(self, slice_visible, **kwargs):
+        """Callback fired when the slice checkbox/switch is toggled."""
+        actor = self.vtk_actors.get("vtk_slice_actor")
+        if actor:
+            actor.SetVisibility(1 if slice_visible else 0)
+            self.ctrl.view_update()
+
     def setup_vtk_pipeline(self):
         self.renderer = vtk.vtkRenderer()
         self.renderWindow = vtk.vtkRenderWindow()
@@ -191,6 +227,24 @@ class ObjViewerApp(TrameApp):
                         density="compact",
                         clearable=True,
                     )
+                    with v3.VRow(classes="align-center px-3 mt-1", v_if="slice_enabled"):
+                        with v3.VCol(cols="8", classes="py-0"):
+                            v3.VSlider(
+                                v_model=("slice_value",),
+                                min=("slice_min",),
+                                max=("slice_max",),
+                                step="any",
+                                density="compact",
+                                hide_details=True,
+                                color="primary"
+                            )
+                        with v3.VCol(cols="4", classes="py-0 d-flex justify-end"):
+                            v3.VSwitch(
+                                v_model=("slice_visible",),
+                                color="primary",
+                                density="compact",
+                                hide_details=True,
+                            )
                     v3.VTextField(
                         v_model=("directory_path",),
                         label="Path to OBJ Files",
