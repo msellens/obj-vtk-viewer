@@ -51,30 +51,31 @@ class ObjViewerApp(TrameApp):
 
         volume_data = reader.GetOutput()
         center = volume_data.GetCenter()
-        bounds = volume_data.GetBounds()  # Force bounds computation for accurate range
-        print(f"Center of volume: {center}, Bounds: {bounds}")
+        bounds = volume_data.GetBounds() 
         scalar_range = volume_data.GetPointData().GetScalars().GetRange()
 
         lut = vtk.vtkLookupTable()
         lut.SetTableRange(scalar_range[0], scalar_range[1])
         lut.SetHueRange(0.667, 0.0)
         lut.Build()
+
         # Push the dynamic range configurations back to the UI state
         self.state.slice_min = bounds[4]  # Z-min
         self.state.slice_max = bounds[5]  # Z-max
         self.state.slice_value = center[2]
         self.state.slice_enabled = True
 
-        plane = vtk.vtkPlane()
-        plane.SetOrigin(center[0], center[1], center[2])
-        plane.SetNormal(0, 0, 1)
+        self.plane = vtk.vtkPlane()
+        # When editing, we will reset the origin's Z value based on the slider, but keep X and Y centered
+        self.plane.SetOrigin(center[0], center[1], center[2])
+        self.plane.SetNormal(0, 0, 1)
 
-        cutter = vtk.vtkCutter()
-        cutter.SetInputConnection(reader.GetOutputPort())
-        cutter.SetCutFunction(plane)
+        self.cutter = vtk.vtkCutter()
+        self.cutter.SetInputConnection(reader.GetOutputPort())
+        self.cutter.SetCutFunction(self.plane)
 
         sliceMapper = vtk.vtkPolyDataMapper()
-        sliceMapper.SetInputConnection(cutter.GetOutputPort())
+        sliceMapper.SetInputConnection(self.cutter.GetOutputPort())
         sliceMapper.SetLookupTable(lut)
         sliceMapper.SetScalarRange(scalar_range)
 
@@ -179,13 +180,15 @@ class ObjViewerApp(TrameApp):
         """Callback fired when the user shifts the VTK scalar range slider."""
         actor = self.vtk_actors.get("vtk_slice_actor")
         print(f"New slice value: {slice_value}")
-        if not actor or not hasattr(self, "cutter"):
+        if not actor or not hasattr(self, "plane"):
             return
         
+        # Keep X and Y centered, update Z position dynamically
+        x, y, _ = self.plane.GetOrigin()
+        self.plane.SetOrigin(x, y, float(slice_value))
         print(f"Slice value changed")
-        # Example processing: update cutter contour value based on range value
-        self.cutter.SetValue(0, float(slice_value))
-        self.ctrl.view_update()
+        
+        self.ctrl.view_update()        
 
     def on_slice_visibility_toggle(self, slice_visible, **kwargs):
         """Callback fired when the slice checkbox/switch is toggled."""
