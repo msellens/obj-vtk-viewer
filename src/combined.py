@@ -120,9 +120,10 @@ class ObjViewerApp(TrameApp):
             return
 
         # Clear any previous actors from the scene
-        for actor in self.vtk_actors.values():
+        obj_keys = [k for k in self.vtk_actors.keys() if k != "vtk_slice_actor"]
+        for key in obj_keys:
+            actor = self.vtk_actors.pop(key)
             self.renderer.RemoveActor(actor)
-        self.vtk_actors.clear()
 
         ui_files = []
         initial_visibilities = {}
@@ -136,8 +137,16 @@ class ObjViewerApp(TrameApp):
                 reader = vtk.vtkOBJReader()
                 reader.SetFileName(str(obj_file))
                 
+                decimate = vtk.vtkDecimatePro()
+                decimate.SetInputConnection(reader.GetOutputPort())
+                
+                # Set reduction target (e.g., 0.70 means remove 70% of triangles)
+                decimate.SetTargetReduction(0.70) 
+                decimate.SetBoundaryVertexDeletion(0)  # Preserve boundaries
+                decimate.PreserveTopologyOn()  # Helps prevent holes from forming
+                
                 mapper = vtk.vtkPolyDataMapper()
-                mapper.SetInputConnection(reader.GetOutputPort())
+                mapper.SetInputConnection(decimate.GetOutputPort())
                 
                 actor = vtk.vtkActor()
                 actor.SetMapper(mapper)
@@ -230,24 +239,43 @@ class ObjViewerApp(TrameApp):
                         density="compact",
                         clearable=True,
                     )
-                    with v3.VRow(classes="align-center px-3 mt-1", v_if="slice_enabled"):
-                        with v3.VCol(cols="8", classes="py-0"):
-                            v3.VSlider(
-                                v_model=("slice_value",),
-                                min=("slice_min",),
-                                max=("slice_max",),
-                                step="any",
-                                density="compact",
-                                hide_details=True,
-                                color="primary"
+                    # Wrap the slider and label together inside a column, keeping the toggle inline next to it
+                    with html.Div(
+                        v_if="slice_enabled", 
+                        classes="d-flex align-center px-3 mt-n1 mb-2", 
+                        style="gap: 16px; width: 100%;"
+                    ):
+                        # Left side: Stacked Label + Slider
+                        with html.Div(style="flex-grow: 1; display: flex; flex-direction: column;"):
+                            html.Div(
+                                "Slice Position", 
+                                classes="text-caption text-grey-darken-1 mb-n1" # Small, muted text pulled close to the slider
                             )
-                        with v3.VCol(cols="4", classes="py-0 d-flex justify-end"):
-                            v3.VSwitch(
-                                v_model=("slice_visible",),
-                                color="primary",
-                                density="compact",
-                                hide_details=True,
-                            )
+                            # Horizontal container to place the slider and its value side-by-side
+                            with html.Div(classes="d-flex align-center", style="gap: 12px;"):
+                                v3.VSlider(
+                                    v_model=("slice_value",),
+                                    min=("slice_min",),
+                                    max=("slice_max",),
+                                    step="any",
+                                    density="compact",
+                                    hide_details=True,
+                                    color="primary",
+                                    style="flex-grow: 1;"
+                                )
+                                # Live value display box
+                                html.Div(
+                                    "{{ Number(slice_value).toFixed(5) }}", # Dynamic text formatting to 2 decimal places
+                                    classes="text-body-2 font-weight-medium text-grey-darken-2",
+                                    style="min-width: 50px; text-align: right;"
+                                )                            
+                        # Right side: Inline Visibility Toggle
+                        v3.VSwitch(
+                            v_model=("slice_visible",),
+                            color="primary",
+                            density="compact",
+                            hide_details=True,
+                        )
                     v3.VTextField(
                         v_model=("directory_path",),
                         label="Path to OBJ Files",
