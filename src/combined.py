@@ -10,7 +10,6 @@ from trame.widgets import html
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 import vtk
 
-
 class ObjViewerApp(TrameApp):
     def __init__(self, server=None):
         super().__init__(server)
@@ -22,7 +21,7 @@ class ObjViewerApp(TrameApp):
         # Initialize shared state variables
         self.state.setdefault("loading", True)
         self.state.setdefault("directory_path", "")
-        self.state.setdefault("vtk_file", "/Users/marcellens/data/soln_2048x2048x128.vtk")
+        self.state.setdefault("vtk_file","../data/soln_2048x2048x128.vtk")
         self.state.setdefault("files_list", [])     
         self.state.setdefault("visibilities", {})   
         self.state.setdefault("slice_visible", True)
@@ -32,6 +31,9 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("slice_enabled", False)
         self.state.setdefault("selected_files", {})   
         self.state.setdefault("key_pressed", "None")
+
+        self.default_obj_color = (1.0, 1.0, 1.0)  # White
+        self.default_opacity = 0.5
 
         self._build_ui()
 
@@ -91,7 +93,8 @@ class ObjViewerApp(TrameApp):
             
         self.vtk_actors["vtk_slice_actor"] = sliceActor
         self.renderer.AddActor(sliceActor)
-    
+
+
     async def load_vtk_file(self, vtk_file, **kwargs):
         """Triggered automatically when vtk_file changes via the UI text input."""
         # Safety check: If empty/invalid, turn loading off right away
@@ -152,6 +155,8 @@ class ObjViewerApp(TrameApp):
                 mapper.SetInputConnection(decimate.GetOutputPort())
                 
                 actor = vtk.vtkActor()
+                actor.GetProperty().SetOpacity(self.default_opacity)
+                actor.GetProperty().SetColor(self.default_obj_color) 
                 actor.SetMapper(mapper)
                 
                 self.renderer.AddActor(actor)
@@ -171,6 +176,7 @@ class ObjViewerApp(TrameApp):
         self.state.files_list = ui_files
         
         self.renderer.ResetCamera()
+        self.renderer.Reset
         self.ctrl.view_update()
    
     def on_selection_change(self, selected_files, **kwargs):
@@ -184,11 +190,12 @@ class ObjViewerApp(TrameApp):
                 if is_selected:
                     # Highlight color (Yellow)
                     actor.GetProperty().SetColor(1.0, 0.9, 0.0)
-                    # Optional: boost ambient lighting slightly to make it pop
+                    actor.GetProperty().SetOpacity(1.0)
                     actor.GetProperty().SetAmbient(0.2)
                 else:
                     # Default material color (White/Grey)
-                    actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+                    actor.GetProperty().SetColor(self.default_obj_color)
+                    actor.GetProperty().SetOpacity(self.default_opacity)
                     actor.GetProperty().SetAmbient(0.0)
 
         self.ctrl.view_update()
@@ -269,6 +276,7 @@ class ObjViewerApp(TrameApp):
         if not active_selections:
             print("No objects selected to focus. Resetting camera to all visible elements.")
             self.renderer.ResetCamera()
+            self.html_view.push_camera()
             self.ctrl.view_update()
             return
 
