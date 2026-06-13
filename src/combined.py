@@ -53,15 +53,15 @@ class ObjViewerApp(TrameApp):
         reader.SetFileName(vtk_file)
         reader.Update()
 
-        volume_data = reader.GetOutput()
-        center = volume_data.GetCenter()
-        bounds = volume_data.GetBounds() 
-        scalar_range = volume_data.GetPointData().GetScalars().GetRange()
+        self.volume_data = reader.GetOutput()
+        center = self.volume_data.GetCenter()
+        bounds = self.volume_data.GetBounds() 
+        self.scalar_range = self.volume_data.GetPointData().GetScalars().GetRange()
 
-        lut = vtk.vtkLookupTable()
-        lut.SetTableRange(scalar_range[0], scalar_range[1])
-        lut.SetHueRange(0.667, 0.0)
-        lut.Build()
+        self.lut = vtk.vtkLookupTable()
+        self.lut.SetTableRange(self.scalar_range[0], self.scalar_range[1])
+        self.lut.SetHueRange(0.667, 0.0)
+        self.lut.Build()
 
         # Push the dynamic range configurations back to the UI state
         self.state.slice_min = bounds[4]  # Z-min
@@ -80,8 +80,8 @@ class ObjViewerApp(TrameApp):
 
         sliceMapper = vtk.vtkPolyDataMapper()
         sliceMapper.SetInputConnection(self.cutter.GetOutputPort())
-        sliceMapper.SetLookupTable(lut)
-        sliceMapper.SetScalarRange(scalar_range)
+        sliceMapper.SetLookupTable(self.lut)
+        sliceMapper.SetScalarRange(self.scalar_range)
 
         sliceActor = vtk.vtkActor()
         sliceActor.SetMapper(sliceMapper)
@@ -138,7 +138,7 @@ class ObjViewerApp(TrameApp):
         # Scan directory for OBJ files
         for obj_file in path.glob("*.obj"):
             file_name = obj_file.name
-            
+
             try:
                 reader = vtk.vtkOBJReader()
                 reader.SetFileName(str(obj_file))
@@ -151,12 +151,37 @@ class ObjViewerApp(TrameApp):
                 decimate.SetBoundaryVertexDeletion(0)  # Preserve boundaries
                 decimate.PreserveTopologyOn()  # Helps prevent holes from forming
                 
+                decimate.Update()
+                mesh = decimate.GetOutput()
+    
+                # 2. Generate UV Texture Coordinates via vtkTextureMapToPlane
+                # This maps the 3D points to a 2D coordinate space [0,1]
+                uv_generator = vtk.vtkTextureMapToPlane()
+                uv_generator.SetInputData(mesh)
+                
+                # Enable automatic plane estimation using a least-squares fit of the points
+                uv_generator.AutomaticPlaneGenerationOn()
+                uv_generator.SetSRange(0.0, 1.0)
+                uv_generator.SetTRange(0.0, 1.0)
+                uv_generator.Update()
+                
+                probe = vtk.vtkProbeFilter()
+                probe.SetInputConnection(uv_generator.GetOutputPort())          # Target geometry to color
+                probe.SetSourceData(self.volume_data)   # The 3D Volume source
+                probe.Update()
+                
+                    # textured_mesh = probe.GetOutput()
                 mapper = vtk.vtkPolyDataMapper()
-                mapper.SetInputConnection(decimate.GetOutputPort())
+                mapper.SetInputConnection(probe.GetOutputPort())
+                mapper.SetScalarModeToUsePointData()
+                mapper.SetColorModeToMapScalars()
+                mapper.SetLookupTable(self.lut)
+                mapper.SetScalarRange(self.scalar_range)
+                mapper.ScalarVisibilityOn()
                 
                 actor = vtk.vtkActor()
-                actor.GetProperty().SetOpacity(self.default_opacity)
-                actor.GetProperty().SetColor(self.default_obj_color) 
+                # actor.GetProperty().SetOpacity(self.default_opacity)
+                # actor.GetProperty().SetColor(self.default_obj_color) 
                 actor.SetMapper(mapper)
                 
                 self.renderer.AddActor(actor)
@@ -176,7 +201,6 @@ class ObjViewerApp(TrameApp):
         self.state.files_list = ui_files
         
         self.renderer.ResetCamera()
-        self.renderer.Reset
         self.ctrl.view_update()
    
     def on_selection_change(self, selected_files, **kwargs):
