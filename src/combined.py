@@ -31,9 +31,7 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("slice_enabled", False)
         self.state.setdefault("selected_files", {})   
         self.state.setdefault("key_pressed", "None")
-
-        self.default_obj_color = (1.0, 1.0, 1.0)  # White
-        self.default_opacity = 0.5
+        self.state.setdefault("obj_opacity", 0.5)
 
         self._build_ui()
 
@@ -45,6 +43,9 @@ class ObjViewerApp(TrameApp):
         self.state.change("selected_files")(self.on_selection_change)
         self.state.change("slice_value")(self.on_slice_value_change)
         self.state.change("key_pressed")(self.on_key_pressed)
+        self.state.change("obj_opacity")(self.on_obj_opacity_change)
+
+        self.ctrl.set_all_obj_visibilities = self.set_all_obj_visibilities
 
     def _process_vtk_pipeline(self, vtk_file):
         """Heavy blocking operations run safely inside a background thread."""
@@ -202,7 +203,17 @@ class ObjViewerApp(TrameApp):
         
         self.renderer.ResetCamera()
         self.ctrl.view_update()
-   
+
+    def set_all_obj_visibilities_true(self, **kwargs):
+        self.set_all_obj_visibilities(True)
+
+    def set_all_obj_visibilities_false(self, **kwargs):
+        self.set_all_obj_visibilities(False)
+        
+    def set_all_obj_visibilities(self, visible):
+        self.state.visibilities = {name: visible for name in self.state.visibilities}
+        self.update_visibilities(self.state.visibilities)
+
     def on_selection_change(self, selected_files, **kwargs):
         """Fires whenever an item is selected or deselected in the list."""
         if not selected_files:
@@ -213,33 +224,29 @@ class ObjViewerApp(TrameApp):
             if actor:
                 if is_selected:
                     # Highlight color (Yellow)
-                    actor.GetProperty().SetColor(1.0, 0.9, 0.0)
                     actor.GetProperty().SetOpacity(1.0)
                     actor.GetProperty().SetAmbient(0.2)
                 else:
                     # Default material color (White/Grey)
-                    actor.GetProperty().SetColor(self.default_obj_color)
-                    actor.GetProperty().SetOpacity(self.default_opacity)
+                    actor.GetProperty().SetOpacity(self.state.obj_opacity)
                     actor.GetProperty().SetAmbient(0.0)
 
+        self.ctrl.view_update()
+
+    def update_visibilities(self, visibilities):
+        for file_name, is_visible in visibilities.items():
+            actor = self.vtk_actors.get(file_name)
+            if actor:
+                # Synchronize the VTK actor state with the updated dict state
+                actor.SetVisibility(1 if is_visible else 0)
         self.ctrl.view_update()
 
     def on_visibilities_change(self, visibilities, **kwargs):
         """Automatically fires whenever ANY switch in the UI is flipped."""
         if not visibilities:
             return
-            
-        # print(f"Visibilities updated state: {visibilities}")
-
-        for file_name, is_visible in visibilities.items():
-            actor = self.vtk_actors.get(file_name)
-            if actor:
-                # Synchronize the VTK actor state with the updated dict state
-                actor.SetVisibility(1 if is_visible else 0)
-                # print(f"Toggled visibility for {file_name}: {'Visible' if is_visible else 'Hidden'}")
-        
-        # Force the render window to update the view
-        self.ctrl.view_update()
+           
+        self.update_visibilities(visibilities)
 
     def on_slice_value_change(self, slice_value, **kwargs):
         """Callback fired when the user shifts the VTK scalar range slider."""
@@ -261,6 +268,16 @@ class ObjViewerApp(TrameApp):
         if actor:
             actor.SetVisibility(1 if slice_visible else 0)
             self.ctrl.view_update()
+
+    def on_obj_opacity_change(self, obj_opacity, **kwargs):
+        """Callback fired when the user shifts the OBJ opacity range slider."""
+        obj_keys = [k for k in self.vtk_actors.keys() if k != "vtk_slice_actor"]
+        for key in obj_keys:
+            actor = self.vtk_actors[key]
+            if not self.state.selected_files[key]:
+                actor.GetProperty().SetOpacity(obj_opacity)
+
+        self.ctrl.view_update()        
 
     def setup_vtk_pipeline(self):
         self.renderer = vtk.vtkRenderer()
@@ -400,6 +417,32 @@ class ObjViewerApp(TrameApp):
                     )
 
                 v3.VDivider()
+
+                with v3.VRow(classes="px-3 pb-2", style="gap: 8px;"):
+                    v3.VBtn(
+                        "Show all",
+                        color="primary",
+                        variant="tonal",
+                        click=self.set_all_obj_visibilities_true
+                    )
+                    v3.VBtn(
+                        "Hide all",
+                        color="secondary",
+                        variant="tonal",
+                        click=self.set_all_obj_visibilities_false
+                    )
+
+                v3.VSlider(
+                    v_model=("obj_opacity",),
+                    min=0.0,
+                    max=1.0,
+                    label="Opacity",
+                    step="any",
+                    density="compact",
+                    hide_details=True,
+                    color="primary",
+                    style="flex-grow: 1;"
+                )
 
                 # Loop through flat filenames instead of raw objects
                 with v3.VList(v_if="files_list.length > 0"):
