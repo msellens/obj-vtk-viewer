@@ -1,6 +1,5 @@
 import os
 import asyncio
-import threading
 from pathlib import Path
 from trame.app import TrameApp
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout
@@ -285,17 +284,18 @@ class ObjViewerApp(TrameApp):
                 bounds = actor.GetBounds() # Returns tuple: (xmin, xmax, ymin, ymax, zmin, zmax)
                 
                 # Expand global bounding limits to include this actor
-                global_bounds[0] = min(global_bounds[0], bounds[0]) # xmin
-                global_bounds[1] = max(global_bounds[1], bounds[1]) # xmax
-                global_bounds[2] = min(global_bounds[2], bounds[2]) # ymin
-                global_bounds[3] = max(global_bounds[3], bounds[3]) # ymax
-                global_bounds[4] = min(global_bounds[4], bounds[4]) # zmin
-                global_bounds[5] = max(global_bounds[5], bounds[5]) # zmax
+                global_bounds[0] = min(global_bounds[0], bounds[0]) * 0.95 # xmin
+                global_bounds[1] = max(global_bounds[1], bounds[1]) * 1.05  # xmax
+                global_bounds[2] = min(global_bounds[2], bounds[2]) * 0.95  # ymin
+                global_bounds[3] = max(global_bounds[3], bounds[3]) * 1.05 # ymax
+                global_bounds[4] = min(global_bounds[4], bounds[4]) * 0.95  # zmin
+                global_bounds[5] = max(global_bounds[5], bounds[5]) * 1.05 # zmax
 
         if valid_actor_found:
             print(f"Centering view on selected bounds: {global_bounds}")
             # Center and frame the camera safely using VTK's native bounds utility
             self.renderer.ResetCamera(global_bounds)
+            self.html_view.push_camera()
             self.ctrl.view_update()
 
     def on_key_pressed(self, **kwargs):
@@ -422,9 +422,9 @@ class ObjViewerApp(TrameApp):
                             classes="pa-0 fill-height", 
                             style="position: relative; overflow: hidden;"
                         ):
-                            html_view = vtk3.VtkLocalView(self.renderWindow)
-                            self.ctrl.view_update = html_view.update
-                            self.ctrl.on_server_ready.add(html_view.update)
+                            self.html_view = vtk3.VtkLocalView(self.renderWindow)
+                            self.ctrl.view_update = self.html_view.update
+                            self.ctrl.on_server_ready.add(self.html_view.update)
 
                             # 2. Loading Overlay container centered on top
                             with html.Div(
