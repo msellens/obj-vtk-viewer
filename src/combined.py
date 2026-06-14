@@ -10,19 +10,22 @@ from trame.widgets import html
 import vtkmodules.vtkRenderingOpenGL2  # noqa
 import vtk
 
+from obj_model import ObjModel
+from vtk_scene import VTKScene
+
 class ObjViewerApp(TrameApp):
     def __init__(self, server=None):
         super().__init__(server)
 
-        self.vtk_actors = {}  # Local cache for VTK actors keyed by file name
-
-        self.setup_vtk_pipeline()
+        self.vtk_scene = VTKScene()
+        self.obj_models = {}  # Per-OBJ render model storage
 
         # Initialize shared state variables
         self.state.setdefault("loading", True)
         self.state.setdefault("directory_path", "")
         self.state.setdefault("vtk_file","../data/soln_2048x2048x128.vtk")
         self.state.setdefault("files_list", [])     
+        self.state.setdefault("file_display_names", {})
         self.state.setdefault("visibilities", {})   
         self.state.setdefault("slice_visible", True)
         self.state.setdefault("slice_value", 0.0)
@@ -35,6 +38,12 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("use_field_coloring", False)
         
         self._build_ui()
+
+        @self.server.controller.on_server_ready.add
+        def ctrl_ready(**kwargs):
+            self.vtk_scene.reset_camera()
+            if hasattr(self, "html_view"):
+                self.html_view.update()
 
         self.state.change("directory_path")(self.load_directory)
         self.state.change("vtk_file")(self.load_vtk_file)
@@ -49,51 +58,7 @@ class ObjViewerApp(TrameApp):
         
     def _process_vtk_pipeline(self, vtk_file):
         """Heavy blocking operations run safely inside a background thread."""
-        print(f"Loading VTK file in background: {vtk_file}")
-        reader = vtk.vtkStructuredPointsReader()
-        reader.SetFileName(vtk_file)
-        reader.Update()
-
-        self.volume_data = reader.GetOutput()
-        center = self.volume_data.GetCenter()
-        bounds = self.volume_data.GetBounds() 
-        self.scalar_range = self.volume_data.GetPointData().GetScalars().GetRange()
-
-        self.lut = vtk.vtkLookupTable()
-        self.lut.SetTableRange(self.scalar_range[0], self.scalar_range[1])
-        self.lut.SetHueRange(0.667, 0.0)
-        self.lut.Build()
-
-        # Push the dynamic range configurations back to the UI state
-        self.state.slice_min = bounds[4]  # Z-min
-        self.state.slice_max = bounds[5]  # Z-max
-        self.state.slice_value = center[2]
-        self.state.slice_enabled = True
-
-        self.plane = vtk.vtkPlane()
-        # When editing, we will reset the origin's Z value based on the slider, but keep X and Y centered
-        self.plane.SetOrigin(center[0], center[1], center[2])
-        self.plane.SetNormal(0, 0, 1)
-
-        self.cutter = vtk.vtkCutter()
-        self.cutter.SetInputConnection(reader.GetOutputPort())
-        self.cutter.SetCutFunction(self.plane)
-
-        sliceMapper = vtk.vtkPolyDataMapper()
-        sliceMapper.SetInputConnection(self.cutter.GetOutputPort())
-        sliceMapper.SetLookupTable(self.lut)
-        sliceMapper.SetScalarRange(self.scalar_range)
-
-        sliceActor = vtk.vtkActor()
-        sliceActor.SetMapper(sliceMapper)
-
-        # Safely remove old actor and switch to new one
-        actor = self.vtk_actors.get("vtk_slice_actor")
-        if actor:
-            self.renderer.RemoveActor(actor)
-            
-        self.vtk_actors["vtk_slice_actor"] = sliceActor
-        self.renderer.AddActor(sliceActor)
+        return self.vtk_scene.load_volume(vtk_file)
 
 
     async def load_vtk_file(self, vtk_file, **kwargs):
@@ -110,9 +75,14 @@ class ObjViewerApp(TrameApp):
 
         try:
             # Run heavy work in background thread
-            await asyncio.to_thread(self._process_vtk_pipeline, vtk_file)
-            
-            self.renderer.ResetCamera()
+            metadata = await asyncio.to_thread(self._process_vtk_pipeline, vtk_file)
+
+            self.state.slice_min = metadata["slice_min"]
+            self.state.slice_max = metadata["slice_max"]
+            self.state.slice_value = metadata["slice_value"]
+            self.state.slice_enabled = metadata["slice_enabled"]
+
+            self.vtk_scene.reset_camera()
             self.ctrl.view_update()
 
         finally:
@@ -125,90 +95,57 @@ class ObjViewerApp(TrameApp):
         if not directory_path or not os.path.isdir(directory_path):
             return
 
-        # Clear any previous actors from the scene
-        obj_keys = [k for k in self.vtk_actors.keys() if k != "vtk_slice_actor"]
-        for key in obj_keys:
-            actor = self.vtk_actors.pop(key)
-            self.renderer.RemoveActor(actor)
+        # Clear any previous OBJ models from the scene
+        for key, model in list(self.obj_models.items()):
+            if model.actor:
+                self.vtk_scene.remove_actor(actor=model.actor)
+            self.obj_models.pop(key, None)
 
-        self.renderer.ResetCamera()
+        self.vtk_scene.reset_camera()
         self.ctrl.view_update()
 
         ui_files = []
+        file_display_names = {}
         initial_visibilities = {}
         initial_selections = {}
         path = Path(directory_path)
-        
+
         # Scan directory for OBJ files
         for obj_file in path.glob("*.obj"):
-            file_name = obj_file.name
-
             try:
-                reader = vtk.vtkOBJReader()
-                reader.SetFileName(str(obj_file))
-                
-                decimate = vtk.vtkDecimatePro()
-                decimate.SetInputConnection(reader.GetOutputPort())
+                model = ObjModel(
+                    str(obj_file),
+                    base_color=(1.0, 1.0, 1.0),
+                    opacity=self.state.obj_opacity,
+                    use_field_coloring=self.state.use_field_coloring,
+                )
+                actor = model.build_actor(
+                    self.vtk_scene.get_volume_data(),
+                    self.vtk_scene.get_lookup_table(),
+                    self.vtk_scene.get_scalar_range(),
+                )
+                self.vtk_scene.add_actor(actor)
+                self.obj_models[model.file_path] = model
 
-                # Set reduction target (e.g., 0.70 means remove 70% of triangles)
-                decimate.SetTargetReduction(0.70) 
-                decimate.SetBoundaryVertexDeletion(0)  # Preserve boundaries
-                decimate.PreserveTopologyOn()  # Helps prevent holes from forming
-                
-                decimate.Update()
-                mesh = decimate.GetOutput()
-    
-                # 2. Generate UV Texture Coordinates via vtkTextureMapToPlane
-                # This maps the 3D points to a 2D coordinate space [0,1]
-                uv_generator = vtk.vtkTextureMapToPlane()
-                uv_generator.SetInputData(mesh)
-                
-                # Enable automatic plane estimation using a least-squares fit of the points
-                uv_generator.AutomaticPlaneGenerationOn()
-                uv_generator.SetSRange(0.0, 1.0)
-                uv_generator.SetTRange(0.0, 1.0)
-                uv_generator.Update()
-                
-                probe = vtk.vtkProbeFilter()
-                probe.SetInputConnection(uv_generator.GetOutputPort())          # Target geometry to color
-                probe.SetSourceData(self.volume_data)   # The 3D Volume source
-                probe.Update()
-                
-                # textured_mesh = probe.GetOutput()
-                mapper = vtk.vtkPolyDataMapper()
-                mapper.SetInputConnection(probe.GetOutputPort())
-                mapper.SetScalarModeToUsePointData()
-                mapper.SetColorModeToMapScalars()
-                mapper.SetLookupTable(self.lut)
-                mapper.SetScalarRange(self.scalar_range)
-                
-                actor = vtk.vtkActor()
-                actor.GetProperty().SetOpacity(self.state.obj_opacity)
-                actor.GetProperty().SetColor(1.0, 1.0, 1.0)
-                actor.SetMapper(mapper)
-                actor.SetVisibility(1)
-
-                self.renderer.AddActor(actor)
-                self.vtk_actors[file_name] = actor
-                
-                # Append string representation
-                ui_files.append(file_name)
-                initial_visibilities[file_name] = True
-                initial_selections[file_name] = False
+                ui_files.append(model.file_path)
+                file_display_names[model.file_path] = model.file_name
+                initial_visibilities[model.file_path] = model.visible
+                initial_selections[model.file_path] = model.selected
 
             except Exception as e:
-                print(f"Error loading {file_name}: {e}")
+                print(f"Error loading {obj_file.name}: {e}")
 
         # Update state cleanly using explicit assignments
+        self.state.file_display_names = file_display_names
         self.state.visibilities = initial_visibilities
         self.state.selected_files = initial_selections
         self.state.files_list = ui_files
 
         # Ensure clean state sync
         self.state.flush()
-        self.update_visibilities(initial_visibilities)  # Force explicit visibility sync
+        self.update_visibilities(initial_visibilities)
 
-        self.renderer.ResetCamera()
+        self.vtk_scene.reset_camera()
         self.ctrl.view_update()
 
     def set_all_obj_visibilities_true(self, **kwargs):
@@ -223,16 +160,9 @@ class ObjViewerApp(TrameApp):
 
     def on_field_coloring_toggle(self, use_field_coloring, **kwargs):
         """Toggle between field coloring and flat color."""
-        obj_keys = [k for k in self.vtk_actors.keys() if k != "vtk_slice_actor"]
-        for key in obj_keys:
-            actor = self.vtk_actors[key]
-            mapper = actor.GetMapper()
-            if use_field_coloring:
-                mapper.ScalarVisibilityOn()
-            else:
-                mapper.ScalarVisibilityOff()
-                actor.GetProperty().SetColor(1.0, 1.0, 1.0)
-    
+        for model in self.obj_models.values():
+            model.set_field_coloring(use_field_coloring)
+
         self.ctrl.view_update()
 
     def on_selection_change(self, selected_files, **kwargs):
@@ -240,28 +170,18 @@ class ObjViewerApp(TrameApp):
         if not selected_files:
             return
 
-        for file_name, is_selected in selected_files.items():
-            actor = self.vtk_actors.get(file_name)
-            if actor:
-                if is_selected:
-                    # Highlight color (Yellow)
-                    actor.GetProperty().SetOpacity(1.0)
-                    actor.GetProperty().SetColor(1.0, 1.0, 0.0)  # Yellow
-                    actor.GetProperty().SetAmbient(0.2)
-                else:
-                    # Default material color (White/Grey)
-                    actor.GetProperty().SetOpacity(self.state.obj_opacity)
-                    actor.GetProperty().SetColor(1.0, 1.0, 1.0)
-                    actor.GetProperty().SetAmbient(0.0)
+        for file_key, is_selected in selected_files.items():
+            model = self.obj_models.get(file_key)
+            if model:
+                model.set_selected(is_selected)
 
         self.ctrl.view_update()
 
     def update_visibilities(self, visibilities):
-        for file_name, is_visible in visibilities.items():
-            actor = self.vtk_actors.get(file_name)
-            if actor:
-                # Synchronize the VTK actor state with the updated dict state
-                actor.SetVisibility(1 if is_visible else 0)
+        for file_key, is_visible in visibilities.items():
+            model = self.obj_models.get(file_key)
+            if model:
+                model.set_visibility(is_visible)
         self.ctrl.view_update()
 
     def on_visibilities_change(self, visibilities, **kwargs):
@@ -272,54 +192,23 @@ class ObjViewerApp(TrameApp):
         self.update_visibilities(visibilities)
 
     def on_slice_value_change(self, slice_value, **kwargs):
-        """Callback fired when the user shifts the VTK scalar range slider."""
-        actor = self.vtk_actors.get("vtk_slice_actor")
+        """Callback fired when the user shifts the VTK slice slider."""
         print(f"New slice value: {slice_value}")
-        if not actor or not hasattr(self, "plane"):
-            return
-        
-        # Keep X and Y centered, update Z position dynamically
-        x, y, _ = self.plane.GetOrigin()
-        self.plane.SetOrigin(x, y, float(slice_value))
-        print(f"Slice value changed")
-        
-        self.ctrl.view_update()        
+        self.vtk_scene.set_slice_position(slice_value)
+        self.ctrl.view_update()
 
     def on_slice_visibility_toggle(self, slice_visible, **kwargs):
         """Callback fired when the slice checkbox/switch is toggled."""
-        actor = self.vtk_actors.get("vtk_slice_actor")
-        if actor:
-            actor.SetVisibility(1 if slice_visible else 0)
-            self.ctrl.view_update()
+        self.vtk_scene.set_slice_visibility(slice_visible)
+        self.ctrl.view_update()
 
     def on_obj_opacity_change(self, obj_opacity, **kwargs):
         """Callback fired when the user shifts the OBJ opacity range slider."""
-        obj_keys = [k for k in self.vtk_actors.keys() if k != "vtk_slice_actor"]
-        for key in obj_keys:
-            actor = self.vtk_actors[key]
-            if not self.state.selected_files[key]:
-                actor.GetProperty().SetOpacity(obj_opacity)
+        for model in self.obj_models.values():
+            model.set_opacity(obj_opacity)
 
         self.ctrl.view_update()        
 
-    def setup_vtk_pipeline(self):
-        self.renderer = vtk.vtkRenderer()
-        self.renderWindow = vtk.vtkRenderWindow()
-        self.renderWindow.SetOffScreenRendering(1) # Keep headless
-        self.renderWindow.AddRenderer(self.renderer)
-
-        self.renderWindowInteractor = vtk.vtkRenderWindowInteractor()
-        self.renderWindowInteractor.SetRenderWindow(self.renderWindow)
-        self.renderWindowInteractor.GetInteractorStyle().SetCurrentStyleToTrackballCamera()
-
-        self.renderer.SetBackground(0.1, 0.2, 0.4)
-        self.renderer.ResetCamera()
-
-        @self.server.controller.on_server_ready.add
-        def ctrl_ready(**kwargs):
-            self.renderer.ResetCamera()
-            if hasattr(self, 'html_view'):
-                self.html_view.update()
 
     def on_focus_selected_objects(self, event_list=None, **kwargs):
         # Print the incoming event data to your terminal to inspect it
@@ -339,7 +228,7 @@ class ObjViewerApp(TrameApp):
         # Fallback: If nothing is selected, reset camera to the entire scene
         if not active_selections:
             print("No objects selected to focus. Resetting camera to all visible elements.")
-            self.renderer.ResetCamera()
+            self.vtk_scene.reset_camera()
             self.html_view.push_camera()
             self.ctrl.view_update()
             return
@@ -349,8 +238,9 @@ class ObjViewerApp(TrameApp):
         global_bounds = [float('inf'), float('-inf'), float('inf'), float('-inf'), float('inf'), float('-inf')]
         valid_actor_found = False
 
-        for file_name in active_selections:
-            actor = self.vtk_actors.get(file_name)
+        for file_key in active_selections:
+            model = self.obj_models.get(file_key)
+            actor = model.actor if model else None
             if actor and actor.GetVisibility():
                 valid_actor_found = True
                 bounds = actor.GetBounds() # Returns tuple: (xmin, xmax, ymin, ymax, zmin, zmax)
@@ -366,7 +256,7 @@ class ObjViewerApp(TrameApp):
         if valid_actor_found:
             print(f"Centering view on selected bounds: {global_bounds}")
             # Center and frame the camera safely using VTK's native bounds utility
-            self.renderer.ResetCamera(global_bounds)
+            self.vtk_scene.reset_camera(global_bounds)
             self.html_view.push_camera()
             self.ctrl.view_update()
 
@@ -379,7 +269,7 @@ class ObjViewerApp(TrameApp):
 
     def _build_ui(self):
         with SinglePageWithDrawerLayout(self.server, **{"@window:keydown.esc": "self.ctrl.on_escape()"}) as layout:
-            layout.title.set_text("Trame OBJ Directory Viewer (Fixed Rendering State)")
+            layout.title.set_text("OBJ/VTK Viewer")
             
             layout.drawer.width = 400
 
@@ -492,7 +382,7 @@ class ObjViewerApp(TrameApp):
                             )
                         # Center: Title text (styled to match highlight state)
                         v3.VListItemTitle(
-                            "{{ fileName }}",
+                            "{{ file_display_names[fileName] }}",
                             classes=(
                                 "{'text-amber-darken-3 font-weight-bold': selected_files[fileName], "
                                 "'text-right flex-grow-1': true}"
@@ -526,7 +416,7 @@ class ObjViewerApp(TrameApp):
                             classes="pa-0 fill-height", 
                             style="position: relative; overflow: hidden;"
                         ):
-                            self.html_view = vtk3.VtkLocalView(self.renderWindow)
+                            self.html_view = vtk3.VtkLocalView(self.vtk_scene.renderWindow)
                             self.ctrl.view_update = self.html_view.update
                             self.ctrl.on_server_ready.add(self.html_view.update)
 
