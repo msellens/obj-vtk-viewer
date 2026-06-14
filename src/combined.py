@@ -268,7 +268,7 @@ class ObjViewerApp(TrameApp):
         self.state.key_pressed = "None"  # Reset after handling
 
     def _build_ui(self):
-        with SinglePageWithDrawerLayout(self.server, **{"@window:keydown.esc": "self.ctrl.on_escape()"}) as layout:
+        with SinglePageWithDrawerLayout(self.server) as layout:
             layout.title.set_text("OBJ/VTK Viewer")
             
             layout.drawer.width = 400
@@ -329,9 +329,9 @@ class ObjViewerApp(TrameApp):
                         clearable=True,
                     )
 
-                v3.VDivider()
+                v3.VDivider(classes="my-2")
 
-                with v3.VRow(classes="px-3 pb-2", style="gap: 8px;"):
+                with v3.VRow(classes="mt-2 px-3 pb-2", style="gap: 8px;"):
                     v3.VBtn(
                         "Show all",
                         color="primary",
@@ -404,44 +404,46 @@ class ObjViewerApp(TrameApp):
                     v3.VCardText(html="Provide a valid path containing .obj models.")
 
             with layout.content:
-                with v3.VApp(
+                with v3.VContainer(
+                    fluid=True, 
+                    classes="pa-0 fill-height d-flex flex-column align-center justify-center",
+                    style="min-height: 0;",
                     v_on_keydown_space="key_pressed = 'Space'",
                     v_on_keydown_enter="key_pressed = 'Enter'",
                     v_on_keydown_s="key_pressed = 'S'",
                     v_on_keydown_f="key_pressed = 'F'"
                 ):
-                    with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
-                        with v3.VContainer(
-                            fluid=True, 
-                            classes="pa-0 fill-height", 
-                            style="position: relative; overflow: hidden;"
-                        ):
-                            self.html_view = vtk3.VtkLocalView(self.vtk_scene.renderWindow)
-                            self.ctrl.view_update = self.html_view.update
-                            self.ctrl.on_server_ready.add(self.html_view.update)
+                    with v3.VContainer(
+                        fluid=True, 
+                        classes="pa-0 fill-height", 
+                        style="position: relative; overflow: hidden;"
+                    ):
+                        self.html_view = vtk3.VtkLocalView(self.vtk_scene.renderWindow)
+                        self.ctrl.view_update = self.html_view.update
+                        self.ctrl.on_server_ready.add(self.html_view.update)
 
-                            # 2. Loading Overlay container centered on top
-                            with html.Div(
-                                v_if="loading",
-                                classes="d-flex flex-column justify-center align-center position-absolute fill-height",
-                                style=(
-                                    "position: absolute; "
-                                    "top: 0; left: 0; right: 0; bottom: 0; "
-                                    "width: 100%; height: 100%; "
-                                    "background: rgba(255, 255, 255, 0.7); "
-                                    "z-index: 5;"
-                                )
-                            ):
-                                v3.VProgressCircular(
-                                    indeterminate=True, 
-                                    color="primary", 
-                                    size=64,
-                                    classes="mx-auto"
-                                )
-                                html.Div(
-                                    "Loading VTK File...",
-                                    classes="text-h6 text-center text-primary mt-4"
-                                )
+                        # 2. Loading Overlay container centered on top
+                        with html.Div(
+                            v_if="loading",
+                            classes="d-flex flex-column justify-center align-center position-absolute fill-height",
+                            style=(
+                                "position: absolute; "
+                                "top: 0; left: 0; right: 0; bottom: 0; "
+                                "width: 100%; height: 100%; "
+                                "background: rgba(255, 255, 255, 0.7); "
+                                "z-index: 5;"
+                            )
+                        ):
+                            v3.VProgressCircular(
+                                indeterminate=True, 
+                                color="primary", 
+                                size=64,
+                                classes="mx-auto"
+                            )
+                            html.Div(
+                                "Loading VTK File...",
+                                classes="text-h6 text-center text-primary mt-4"
+                            )
 
 
 def main():
