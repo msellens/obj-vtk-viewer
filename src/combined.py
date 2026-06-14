@@ -32,7 +32,8 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("selected_files", {})   
         self.state.setdefault("key_pressed", "None")
         self.state.setdefault("obj_opacity", 0.5)
-
+        self.state.setdefault("use_field_coloring", False)
+        
         self._build_ui()
 
         self.state.change("directory_path")(self.load_directory)
@@ -44,9 +45,8 @@ class ObjViewerApp(TrameApp):
         self.state.change("slice_value")(self.on_slice_value_change)
         self.state.change("key_pressed")(self.on_key_pressed)
         self.state.change("obj_opacity")(self.on_obj_opacity_change)
-
-        self.ctrl.set_all_obj_visibilities = self.set_all_obj_visibilities
-
+        self.state.change("use_field_coloring")(self.on_field_coloring_toggle)
+        
     def _process_vtk_pipeline(self, vtk_file):
         """Heavy blocking operations run safely inside a background thread."""
         print(f"Loading VTK file in background: {vtk_file}")
@@ -131,6 +131,9 @@ class ObjViewerApp(TrameApp):
             actor = self.vtk_actors.pop(key)
             self.renderer.RemoveActor(actor)
 
+        self.renderer.ResetCamera()
+        self.ctrl.view_update()
+
         ui_files = []
         initial_visibilities = {}
         initial_selections = {}
@@ -171,20 +174,20 @@ class ObjViewerApp(TrameApp):
                 probe.SetSourceData(self.volume_data)   # The 3D Volume source
                 probe.Update()
                 
-                    # textured_mesh = probe.GetOutput()
+                # textured_mesh = probe.GetOutput()
                 mapper = vtk.vtkPolyDataMapper()
                 mapper.SetInputConnection(probe.GetOutputPort())
                 mapper.SetScalarModeToUsePointData()
                 mapper.SetColorModeToMapScalars()
                 mapper.SetLookupTable(self.lut)
                 mapper.SetScalarRange(self.scalar_range)
-                mapper.ScalarVisibilityOn()
                 
                 actor = vtk.vtkActor()
-                # actor.GetProperty().SetOpacity(self.default_opacity)
-                # actor.GetProperty().SetColor(self.default_obj_color) 
+                actor.GetProperty().SetOpacity(self.state.obj_opacity)
+                actor.GetProperty().SetColor(1.0, 1.0, 1.0)
                 actor.SetMapper(mapper)
-                
+                actor.SetVisibility(1)
+
                 self.renderer.AddActor(actor)
                 self.vtk_actors[file_name] = actor
                 
@@ -200,7 +203,11 @@ class ObjViewerApp(TrameApp):
         self.state.visibilities = initial_visibilities
         self.state.selected_files = initial_selections
         self.state.files_list = ui_files
-        
+
+        # Ensure clean state sync
+        self.state.flush()
+        self.update_visibilities(initial_visibilities)  # Force explicit visibility sync
+
         self.renderer.ResetCamera()
         self.ctrl.view_update()
 
@@ -214,6 +221,20 @@ class ObjViewerApp(TrameApp):
         self.state.visibilities = {name: visible for name in self.state.visibilities}
         self.update_visibilities(self.state.visibilities)
 
+    def on_field_coloring_toggle(self, use_field_coloring, **kwargs):
+        """Toggle between field coloring and flat color."""
+        obj_keys = [k for k in self.vtk_actors.keys() if k != "vtk_slice_actor"]
+        for key in obj_keys:
+            actor = self.vtk_actors[key]
+            mapper = actor.GetMapper()
+            if use_field_coloring:
+                mapper.ScalarVisibilityOn()
+            else:
+                mapper.ScalarVisibilityOff()
+                actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+    
+        self.ctrl.view_update()
+
     def on_selection_change(self, selected_files, **kwargs):
         """Fires whenever an item is selected or deselected in the list."""
         if not selected_files:
@@ -225,10 +246,12 @@ class ObjViewerApp(TrameApp):
                 if is_selected:
                     # Highlight color (Yellow)
                     actor.GetProperty().SetOpacity(1.0)
+                    actor.GetProperty().SetColor(1.0, 1.0, 0.0)  # Yellow
                     actor.GetProperty().SetAmbient(0.2)
                 else:
                     # Default material color (White/Grey)
                     actor.GetProperty().SetOpacity(self.state.obj_opacity)
+                    actor.GetProperty().SetColor(1.0, 1.0, 1.0)
                     actor.GetProperty().SetAmbient(0.0)
 
         self.ctrl.view_update()
@@ -430,6 +453,12 @@ class ObjViewerApp(TrameApp):
                         color="secondary",
                         variant="tonal",
                         click=self.set_all_obj_visibilities_false
+                    )
+                    v3.VSwitch(
+                        v_model=("use_field_coloring",),
+                        label="Field",
+                        color="primary",
+                        density="compact",
                     )
 
                 v3.VSlider(
