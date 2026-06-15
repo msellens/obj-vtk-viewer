@@ -101,6 +101,7 @@ class ObjViewerApp(TrameApp):
 
             self.vtk_scene.reset_camera()
             self.ctrl.view_update()
+            logger.info("VTK file loaded successfully: %s", vtk_file)
 
         finally:
             # This turns off the initial launch loading mask cleanly!
@@ -519,7 +520,7 @@ class ObjViewerApp(TrameApp):
 
                         # 2. Loading Overlay container centered on top
                         with html.Div(
-                            v_if="loading",
+                            v_if="loading || trame__busy",
                             classes="d-flex flex-column justify-center align-center position-absolute fill-height",
                             style=(
                                 "position: absolute; "
@@ -537,6 +538,12 @@ class ObjViewerApp(TrameApp):
                             )
                             html.Div(
                                 "Loading VTK File...",
+                                v_if="loading",
+                                classes="text-h6 text-center text-primary mt-4"
+                            )
+                            html.Div(
+                                "Rendering VTK Slice...",
+                                v_if="trame__busy",
                                 classes="text-h6 text-center text-primary mt-4"
                             )
 
