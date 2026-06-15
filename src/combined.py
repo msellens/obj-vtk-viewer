@@ -39,7 +39,9 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("min_field", 0.0)
         self.state.setdefault("max_field", 100.0)
         self.state.setdefault("use_field_coloring", False)
-        
+        self.state.setdefault("probe_data", "")
+        self.state.setdefault("last_click_pos", [0, 0])
+
         self._build_ui()
 
         @self.server.controller.on_server_ready.add
@@ -59,7 +61,8 @@ class ObjViewerApp(TrameApp):
         self.state.change("obj_opacity")(self.on_obj_opacity_change)
         self.state.change("rank_visibility")(self.on_rank_visibility_change)
         self.state.change("use_field_coloring")(self.on_field_coloring_toggle)
-        
+        self.state.change("last_click_pos")(self.on_click)
+
     def _process_vtk_pipeline(self, vtk_file):
         """Heavy blocking operations run safely inside a background thread."""
         return self.vtk_scene.load_volume(vtk_file)
@@ -288,6 +291,70 @@ class ObjViewerApp(TrameApp):
 
         self.state.key_pressed = "None"  # Reset after handling
 
+    def on_click(self, last_click_pos, **kwargs):
+        rw, rh = self.vtk_scene.renderWindow.GetSize()
+        print(f"Click coords: {last_click_pos} -> render window size: {rw}x{rh}")
+        
+        # self.on_vtk_click(last_click_pos)
+        # last_click_pos = [0, 0]  # Reset click position after handling
+
+    def on_vtk_click(self, click_coords):
+        """Handle VTK view click for ray picking and probing."""
+        if not click_coords or len(click_coords) < 4:
+            return
+        
+        self.vtk_scene.clear_callout()
+
+        off_x, off_y, dom_w, dom_h, clientX, clientY, rectX, rectY = click_coords
+        rw, rh = self.vtk_scene.renderWindow.GetSize()
+        print(f"Click coords: {click_coords} -> render window size: {rw}x{rh}")
+        self.vtk_scene.renderWindow.Render()
+
+        # map DOM coords (origin top-left) -> VTK display coords (origin bottom-left)
+        display_x = int(off_x * rw / dom_w)
+        display_y = int((dom_h - off_y) * rh / dom_h)
+        # if canvas resolution differs from CSS size, use actual canvas w/h instead
+
+        # print(f"click: {off_x},{off_y} dom: {dom_w}x{dom_h} -> display: {display_x},{display_y}")
+        print(f"off:{off_x},{off_y} dom_size:{dom_w}x{dom_h} -> display:{display_x},{display_y} rw,rh:{rw},{rh}")
+
+        # for i in range(0,dom_w,10):
+        #     for j in range(0,dom_h,10):
+        #         pick_result = self.vtk_scene.pick_actor_at_display_coords(i, j)
+        #         if pick_result:
+        #             print(f"Successful pick at {i},{j}: {pick_result}")
+
+        pick_result = self.vtk_scene.pick_actor_at_display_coords(display_x, display_y)
+
+        # x, y = click_coords
+        # print(f"Click coords: {click_coords}")
+        # # Perform ray picking
+        # pick_result = self.vtk_scene.pick_actor_at_display_coords(x, y)
+        print(f"Pick result: {pick_result}")
+        
+        if pick_result:
+            intersection_pt = pick_result['intersection_point']
+            print(f"Intersection point in world coordinates: {intersection_pt}")
+            # Probe the volume data at the intersection point
+            probe_result = self.vtk_scene.probe_at_point(
+                intersection_pt[0], 
+                intersection_pt[1], 
+                intersection_pt[2],
+                self.vtk_scene.get_volume_data()
+            )
+            print(f"Probe result: {probe_result}")
+            
+            if probe_result:
+                value = probe_result['value']
+                # Create callout with probed value
+                callout_text = f"Value: {value:.4f}"
+                self.vtk_scene.create_callout(intersection_pt, callout_text)
+                
+                # Update state for UI display
+                self.state.probe_data = f"Position: ({intersection_pt[0]:.2f}, {intersection_pt[1]:.2f}, {intersection_pt[2]:.2f})\nValue: {value:.4f}"
+                
+                self.ctrl.view_update()
+
     def _build_ui(self):
         with SinglePageWithDrawerLayout(self.server) as layout:
             layout.title.set_text("OBJ/VTK Viewer")
@@ -387,8 +454,8 @@ class ObjViewerApp(TrameApp):
                     )
                     v3.VSlider(
                         v_model=("rank_visibility",),
-                        min={"min_field"},
-                        max=("max_field"),
+                        min=("min_field",),
+                        max=("max_field",),
                         label="Rank Vis",
                         step="any",
                         density="compact",
@@ -450,9 +517,25 @@ class ObjViewerApp(TrameApp):
                     with v3.VContainer(
                         fluid=True, 
                         classes="pa-0 fill-height", 
-                        style="position: relative; overflow: hidden;"
-                    ):
-                        self.html_view = vtk3.VtkLocalView(self.vtk_scene.renderWindow)
+                        style="position: relative; overflow: hidden;",
+                        # v_on_click_shift="last_click_pos = [$event.offsetX, $event.offsetY, $event.target.clientWidth, $event.target.clientHeight, window.devicePixelRatio]"
+                        # v_on_click_shift="last_click_pos = [$event.offsetX, $event.offsetY, $event.target.clientWidth, $event.target.clientHeight]"
+                        # v_on_click_shift="last_click_pos = [$event.offsetX, $event.offsetY, $event.target.clientWidth, $event.target.clientHeight, $event.target.width, $event.target.height, window.devicePixelRatio]"
+                        # v_on_click_shift="(function() { const canvas = $event.target.querySelector('canvas'); const cw = canvas ? canvas.width : $event.target.clientWidth; const ch = canvas ? canvas.height : $event.target.clientHeight; last_click_pos = [$event.offsetX, $event.offsetY, $event.target.clientWidth, $event.target.clientHeight, cw, ch, window.devicePixelRatio]; })()"
+                        v_on_click_shift="(function() {"
+                           "const canvas = $event.currentTarget.querySelector('canvas'); "
+                            "if (!canvas) { console.log('No canvas found'); return; } "
+                            "const rect = canvas.getBoundingClientRect(); "
+                            "const x = $event.clientX - rect.left; "
+                            "const y = $event.clientY - rect.top; "
+                            "last_click_pos = [x, y, rect.width, rect.height, canvas.width, canvas.height]; "
+                            "})()"
+                        ):
+                        self.html_view = vtk3.VtkLocalView(
+                            self.vtk_scene.renderWindow,
+                            ref="html_view",
+                            interactive_ratio=1,
+                        )
                         self.ctrl.view_update = self.html_view.update
                         self.ctrl.on_server_ready.add(self.html_view.update)
 
