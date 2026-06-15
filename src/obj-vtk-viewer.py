@@ -1,5 +1,7 @@
 import os
 import asyncio
+import logging
+import math
 from pathlib import Path
 from trame.app import TrameApp
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout
@@ -13,9 +15,19 @@ import vtk
 from obj_model import ObjModel
 from vtk_scene import VTKScene
 
+logger = logging.getLogger(__name__)
+
+
 class ObjViewerApp(TrameApp):
     def __init__(self, server=None):
         super().__init__(server)
+
+        self.server.cli.add_argument(
+            "--log-level",
+            default="INFO",
+            choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            help="Logging level (default: INFO)",
+        )
 
         self.vtk_scene = VTKScene()
         self.obj_models = {}  # Per-OBJ render model storage
@@ -23,7 +35,7 @@ class ObjViewerApp(TrameApp):
         # Initialize shared state variables
         self.state.setdefault("loading", True)
         self.state.setdefault("directory_path", "")
-        self.state.setdefault("vtk_file","../data/soln_2048x2048x128.vtk")
+        self.state.setdefault("vtk_file","data/soln_2048x2048x128.vtk")
         self.state.setdefault("files_list", [])     
         self.state.setdefault("file_display_names", {})
         self.state.setdefault("visibilities", {})   
@@ -38,6 +50,7 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("rank_visibility", 50.0)
         self.state.setdefault("min_field", 0.0)
         self.state.setdefault("max_field", 100.0)
+        self.state.setdefault("rank_slider_enabled", False)
         self.state.setdefault("use_field_coloring", False)
         
         self._build_ui()
@@ -105,6 +118,8 @@ class ObjViewerApp(TrameApp):
                 self.vtk_scene.remove_actor(actor=model.actor)
             self.obj_models.pop(key, None)
 
+        self._sync_rank_slider_state()
+
         self.vtk_scene.reset_camera()
         self.ctrl.view_update()
 
@@ -136,21 +151,23 @@ class ObjViewerApp(TrameApp):
                 initial_visibilities[model.file_path] = model.visible
                 initial_selections[model.file_path] = model.selected
 
-            except Exception as e:
-                print(f"Error loading {obj_file.name}: {e}")
+            except Exception:
+                logger.exception("Error loading %s", obj_file.name)
 
         sorted_files = sorted(
             self.obj_models,
             key=lambda key: self.obj_models[key].average,
             reverse=True,
         )
+
+        self._sync_rank_slider_state()
+
         self.state.files_list = sorted_files
 
         # Update state cleanly using explicit assignments
         self.state.file_display_names = file_display_names
         self.state.visibilities = initial_visibilities
         self.state.selected_files = initial_selections
-        # self.state.files_list = ui_files
 
         # Ensure clean state sync
         self.state.flush()
@@ -159,10 +176,43 @@ class ObjViewerApp(TrameApp):
         self.vtk_scene.reset_camera()
         self.ctrl.view_update()
 
+    def _sync_rank_slider_state(self):
+        """Keep rank slider bounds and value finite for Vuetify."""
+        averages = [
+            float(model.average)
+            for model in self.obj_models.values()
+            if math.isfinite(model.average)
+        ]
+
+        if not averages:
+            self.state.rank_slider_enabled = False
+            self.state.min_field = 0.0
+            self.state.max_field = 1.0
+            self.state.rank_visibility = 0.0
+            return
+
+        min_field = min(averages)
+        max_field = max(averages)
+        if min_field == max_field:
+            max_field = min_field + max(abs(min_field) * 1e-6, 1e-6)
+
+        current = self.state.rank_visibility
+        if not isinstance(current, (int, float)) or not math.isfinite(current):
+            current = (min_field + max_field) * 0.5
+        else:
+            current = min(max(current, min_field), max_field)
+
+        self.state.min_field = min_field
+        self.state.max_field = max_field
+        self.state.rank_visibility = current
+        self.state.rank_slider_enabled = True
+
     def set_all_obj_visibilities_true(self, **kwargs):
+        """Trigger all objects to be visible."""
         self.set_all_obj_visibilities(True)
 
     def set_all_obj_visibilities_false(self, **kwargs):
+        """Trigger all objects to be hidden."""
         self.set_all_obj_visibilities(False)
         
     def set_all_obj_visibilities(self, visible):
@@ -204,7 +254,6 @@ class ObjViewerApp(TrameApp):
 
     def on_slice_value_change(self, slice_value, **kwargs):
         """Callback fired when the user shifts the VTK slice slider."""
-        print(f"New slice value: {slice_value}")
         self.vtk_scene.set_slice_position(slice_value)
         self.ctrl.view_update()
 
@@ -217,29 +266,25 @@ class ObjViewerApp(TrameApp):
         """Callback fired when the user shifts the OBJ opacity range slider."""
         for model in self.obj_models.values():
             model.set_opacity(obj_opacity)
-
         self.ctrl.view_update()        
 
     def on_rank_visibility_change(self, rank_visibility, **kwargs):
         """Callback fired when the user shifts the rank visibility range slider."""
+        if not isinstance(rank_visibility, (int, float)) or not math.isfinite(rank_visibility):
+            self._sync_rank_slider_state()
+            self.state.flush()
+            return
+
         for model in self.obj_models.values():
-            if model.average <= rank_visibility:
-                model.set_opacity(rank_visibility)
-            print("Do something")
-
-        self.ctrl.view_update()        
-
-
+            model.set_visibility(model.average >= rank_visibility)
+        self.ctrl.view_update()
 
     def on_focus_selected_objects(self, event_list=None, **kwargs):
         # Print the incoming event data to your terminal to inspect it
         if event_list:
-            print(f"Keystroke Event Data: {event_list}")
-            # Example: check if the key object is present
-            # key_pressed = event_list[0].get("key")
+            logger.debug("Keystroke Event Data: %s", event_list)
 
         """Calculates the bounding box of all selected actors and frames the camera on them."""
-        print("Focus on selected objects triggered")
         # Get dictionary of selection states from Trame
         selected_dict = self.state.selected_files or {}
         
@@ -248,7 +293,7 @@ class ObjViewerApp(TrameApp):
         
         # Fallback: If nothing is selected, reset camera to the entire scene
         if not active_selections:
-            print("No objects selected to focus. Resetting camera to all visible elements.")
+            logger.warning("No objects selected to focus. Resetting camera to all visible elements.")
             self.vtk_scene.reset_camera()
             self.html_view.push_camera()
             self.ctrl.view_update()
@@ -275,14 +320,13 @@ class ObjViewerApp(TrameApp):
                 global_bounds[5] = max(global_bounds[5], bounds[5]) * 1.05 # zmax
 
         if valid_actor_found:
-            print(f"Centering view on selected bounds: {global_bounds}")
-            # Center and frame the camera safely using VTK's native bounds utility
+            logger.debug("Centering view on selected bounds: %s", global_bounds)
             self.vtk_scene.reset_camera(global_bounds)
             self.html_view.push_camera()
             self.ctrl.view_update()
 
     def on_key_pressed(self, **kwargs):
-        print(f"Key pressed state: {self.state.key_pressed}")
+        logger.debug("Key pressed: %s", self.state.key_pressed)
         if self.state.key_pressed == "F":
             self.on_focus_selected_objects()
 
@@ -314,7 +358,7 @@ class ObjViewerApp(TrameApp):
                         with html.Div(style="flex-grow: 1; display: flex; flex-direction: column;"):
                             html.Div(
                                 "Slice Position", 
-                                classes="text-caption text-grey-darken-1 mb-n1" # Small, muted text pulled close to the slider
+                                classes="text-caption text-grey-darken-1 mb-n1" 
                             )
                             # Horizontal container to place the slider and its value side-by-side
                             with html.Div(classes="d-flex align-center", style="gap: 12px;"):
@@ -330,7 +374,7 @@ class ObjViewerApp(TrameApp):
                                 )
                                 # Live value display box
                                 html.Div(
-                                    "{{ Number(slice_value).toFixed(5) }}", # Dynamic text formatting to 2 decimal places
+                                    "{{ Number(slice_value).toFixed(5) }}", 
                                     classes="text-body-2 font-weight-medium text-grey-darken-2",
                                     style="min-width: 50px; text-align: right;"
                                 )                            
@@ -374,28 +418,45 @@ class ObjViewerApp(TrameApp):
                             classes="ml-auto",
                         )
 
-                    v3.VSlider(
-                        v_model=("obj_opacity",),
-                        min=0.0,
-                        max=1.0,
-                        label="Opacity",
-                        step="any",
-                        density="compact",
-                        hide_details=True,
-                        color="primary",
-                        style="flex-grow: 1;"
-                    )
-                    v3.VSlider(
-                        v_model=("rank_visibility",),
-                        min={"min_field"},
-                        max=("max_field"),
-                        label="Rank Vis",
-                        step="any",
-                        density="compact",
-                        hide_details=True,
-                        color="primary",
-                        style="flex-grow: 1;"
-                    )
+                    with html.Div(classes="d-flex align-center", style="gap: 12px;"):
+                        v3.VSlider(
+                            v_model=("obj_opacity",),
+                            min=0.0,
+                            max=1.0,
+                            label="Opacity",
+                            step="any",
+                            density="compact",
+                            hide_details=True,
+                            color="primary",
+                            style="flex-grow: 1;"
+                        )
+                        html.Div(
+                            "{{ Number(obj_opacity).toFixed(2) }}", 
+                            classes="text-body-2 font-weight-medium text-grey-darken-2",
+                            style="min-width: 50px; text-align: right;"
+                        )                            
+                    with html.Div(
+                        v_if="rank_slider_enabled",
+                        classes="d-flex align-center",
+                        style="gap: 12px;",
+                    ):
+                        v3.VSlider(
+                            v_model=("rank_visibility",),
+                            min=("min_field",),
+                            max=("max_field",),
+                            label="Rank Vis",
+                            step="any",
+                            density="compact",
+                            hide_details=True,
+                            color="primary",
+                            style="flex-grow: 1;",
+                            key=("`${min_field}-${max_field}`",),
+                        )
+                        html.Div(
+                            "{{ Number(rank_visibility).toFixed(4) }}",
+                            classes="text-body-2 font-weight-medium text-grey-darken-2",
+                            style="min-width: 50px; text-align: right;",
+                        )
 
                 # Loop through flat filenames instead of raw objects
                 with v3.VList(v_if="files_list.length > 0"):
@@ -480,8 +541,17 @@ class ObjViewerApp(TrameApp):
                             )
 
 
+def configure_logging(level_name):
+    logging.basicConfig(
+        level=getattr(logging, level_name.upper()),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
 def main():
     app = ObjViewerApp()
+    args, _ = app.server.cli.parse_known_args()
+    configure_logging(args.log_level)
     app.server.start()
 
 if __name__ == "__main__":

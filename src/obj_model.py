@@ -1,5 +1,7 @@
+import math
 from pathlib import Path
 
+import numpy as np
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 
@@ -44,8 +46,16 @@ class ObjModel:
 
         probe_data = probe.GetOutput()
         field_data = probe_data.GetPointData().GetScalars()
-        arr = vtk_to_numpy(field_data)
-        self.average = arr.mean()
+        if field_data is None:
+            self.average = 0.0
+        else:
+            arr = vtk_to_numpy(field_data)
+            if arr.size == 0:
+                self.average = 0.0
+            else:
+                self.average = float(np.nanmean(arr))
+                if not math.isfinite(self.average):
+                    self.average = 0.0
 
         self.mapper = vtk.vtkPolyDataMapper()
         self.mapper.SetInputConnection(probe.GetOutputPort())
