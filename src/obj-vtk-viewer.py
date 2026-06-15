@@ -390,7 +390,8 @@ class ObjViewerApp(TrameApp):
 
                 with v3.VContainer(fluid=True):
                     v3.VTextField(
-                        v_model=("directory_path",),
+                        value=("directory_path", self.state.directory_path),
+                        change=("directory_path = $event.target.value"),
                         label="Path to OBJ Files",
                         prepend_inner_icon="mdi-folder-open",
                         variant="outlined",
@@ -542,7 +543,7 @@ class ObjViewerApp(TrameApp):
                                 classes="text-h6 text-center text-primary mt-4"
                             )
                             html.Div(
-                                "Rendering VTK Slice...",
+                                "Rendering New Scene...",
                                 v_if="trame__busy",
                                 classes="text-h6 text-center text-primary mt-4"
                             )
