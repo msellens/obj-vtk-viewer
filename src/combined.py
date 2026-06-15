@@ -35,6 +35,9 @@ class ObjViewerApp(TrameApp):
         self.state.setdefault("selected_files", {})   
         self.state.setdefault("key_pressed", "None")
         self.state.setdefault("obj_opacity", 0.5)
+        self.state.setdefault("rank_visibility", 50.0)
+        self.state.setdefault("min_field", 0.0)
+        self.state.setdefault("max_field", 100.0)
         self.state.setdefault("use_field_coloring", False)
         
         self._build_ui()
@@ -54,6 +57,7 @@ class ObjViewerApp(TrameApp):
         self.state.change("slice_value")(self.on_slice_value_change)
         self.state.change("key_pressed")(self.on_key_pressed)
         self.state.change("obj_opacity")(self.on_obj_opacity_change)
+        self.state.change("rank_visibility")(self.on_rank_visibility_change)
         self.state.change("use_field_coloring")(self.on_field_coloring_toggle)
         
     def _process_vtk_pipeline(self, vtk_file):
@@ -135,11 +139,18 @@ class ObjViewerApp(TrameApp):
             except Exception as e:
                 print(f"Error loading {obj_file.name}: {e}")
 
+        sorted_files = sorted(
+            self.obj_models,
+            key=lambda key: self.obj_models[key].average,
+            reverse=True,
+        )
+        self.state.files_list = sorted_files
+
         # Update state cleanly using explicit assignments
         self.state.file_display_names = file_display_names
         self.state.visibilities = initial_visibilities
         self.state.selected_files = initial_selections
-        self.state.files_list = ui_files
+        # self.state.files_list = ui_files
 
         # Ensure clean state sync
         self.state.flush()
@@ -208,6 +219,16 @@ class ObjViewerApp(TrameApp):
             model.set_opacity(obj_opacity)
 
         self.ctrl.view_update()        
+
+    def on_rank_visibility_change(self, rank_visibility, **kwargs):
+        """Callback fired when the user shifts the rank visibility range slider."""
+        for model in self.obj_models.values():
+            if model.average <= rank_visibility:
+                model.set_opacity(rank_visibility)
+            print("Do something")
+
+        self.ctrl.view_update()        
+
 
 
     def on_focus_selected_objects(self, event_list=None, **kwargs):
@@ -320,6 +341,9 @@ class ObjViewerApp(TrameApp):
                             density="compact",
                             hide_details=True,
                         )
+                v3.VDivider(classes="my-2")
+
+                with v3.VContainer(fluid=True):
                     v3.VTextField(
                         v_model=("directory_path",),
                         label="Path to OBJ Files",
@@ -329,39 +353,49 @@ class ObjViewerApp(TrameApp):
                         clearable=True,
                     )
 
-                v3.VDivider(classes="my-2")
+                    with v3.VRow(classes="mt-2 px-3 pb-2", style="gap: 8px;"):
+                        v3.VBtn(
+                            "Show all",
+                            color="primary",
+                            variant="tonal",
+                            click=self.set_all_obj_visibilities_true
+                        )
+                        v3.VBtn(
+                            "Hide all",
+                            color="secondary",
+                            variant="tonal",
+                            click=self.set_all_obj_visibilities_false
+                        )
+                        v3.VSwitch(
+                            v_model=("use_field_coloring",),
+                            label="Field Color",
+                            color="primary",
+                            density="compact",
+                            classes="ml-auto",
+                        )
 
-                with v3.VRow(classes="mt-2 px-3 pb-2", style="gap: 8px;"):
-                    v3.VBtn(
-                        "Show all",
-                        color="primary",
-                        variant="tonal",
-                        click=self.set_all_obj_visibilities_true
-                    )
-                    v3.VBtn(
-                        "Hide all",
-                        color="secondary",
-                        variant="tonal",
-                        click=self.set_all_obj_visibilities_false
-                    )
-                    v3.VSwitch(
-                        v_model=("use_field_coloring",),
-                        label="Field",
-                        color="primary",
+                    v3.VSlider(
+                        v_model=("obj_opacity",),
+                        min=0.0,
+                        max=1.0,
+                        label="Opacity",
+                        step="any",
                         density="compact",
+                        hide_details=True,
+                        color="primary",
+                        style="flex-grow: 1;"
                     )
-
-                v3.VSlider(
-                    v_model=("obj_opacity",),
-                    min=0.0,
-                    max=1.0,
-                    label="Opacity",
-                    step="any",
-                    density="compact",
-                    hide_details=True,
-                    color="primary",
-                    style="flex-grow: 1;"
-                )
+                    v3.VSlider(
+                        v_model=("rank_visibility",),
+                        min={"min_field"},
+                        max=("max_field"),
+                        label="Rank Vis",
+                        step="any",
+                        density="compact",
+                        hide_details=True,
+                        color="primary",
+                        style="flex-grow: 1;"
+                    )
 
                 # Loop through flat filenames instead of raw objects
                 with v3.VList(v_if="files_list.length > 0"):

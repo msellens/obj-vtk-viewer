@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import vtk
-
+from vtk.util.numpy_support import vtk_to_numpy
 
 class ObjModel:
     def __init__(self, file_path, base_color=(1.0, 1.0, 1.0), opacity=0.5, use_field_coloring=False):
@@ -14,6 +14,7 @@ class ObjModel:
         self.use_field_coloring = bool(use_field_coloring)
         self.actor = None
         self.mapper = None
+        self.average = 0.0
 
     def build_actor(self, volume_data, lut, scalar_range):
         reader = vtk.vtkOBJReader()
@@ -40,6 +41,11 @@ class ObjModel:
         probe.SetInputConnection(uv_generator.GetOutputPort())
         probe.SetSourceData(volume_data)
         probe.Update()
+
+        probe_data = probe.GetOutput()
+        field_data = probe_data.GetPointData().GetScalars()
+        arr = vtk_to_numpy(field_data)
+        self.average = arr.mean()
 
         self.mapper = vtk.vtkPolyDataMapper()
         self.mapper.SetInputConnection(probe.GetOutputPort())
