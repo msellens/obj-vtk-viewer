@@ -3,7 +3,7 @@
 ## Installation
 
 ### Preinstallation (Mac)
-* Verify that brew, uv, and conda have been installed
+* Verify that brew, uv, and [conda](CONDA.md) have been installed
 
 ### Environment and Dependencies
 * Create a new conda environment
@@ -25,7 +25,7 @@ cd obj-vtk-viewer
 python src/obj-vtk-viewer.py --port 1234
 ```
 #### Usage Notes
-* The vtk import is signficant and it takes a moment to download on first use.
+* The vtk import is signficant and it takes a moment (up to 2 minutes!) to download on first use.
 * The VTK file edit box updates on keystrokes and may cause flickering in the display
 * Press Tab or Enter to trigger an update to the OBJ directory
 * Press 'f' in the main content window to bring selected objects into focus
